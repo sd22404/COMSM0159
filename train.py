@@ -28,7 +28,7 @@ def main(args):
 	train_dataset = DIV2K_X8(
 		root_hr="dataset/DIV2K_train_HR",
 		root_lr="dataset/DIV2K_train_LR_x8",
-		transform=transforms,
+		#transform=transforms,
 	)
 	dip_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=cpu_count())
 	
@@ -37,9 +37,10 @@ def main(args):
 	criterion = torch.nn.MSELoss()
 	optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate)
 
-	trainer = DIPTrainer(model, criterion, optimizer, dip_loader, device)
-	trainer.train(epochs=args.epochs)
-	trainer.visualise()
+	trainer = DIPTrainer(model, IMAGE_SIZE, IMAGE_SIZE, criterion, optimizer, device)
+	lr, hr = next(iter(dip_loader))
+	trainer.train(lr, args.epochs)
+	trainer.visualise(lr, hr)
 
 if __name__ == "__main__":
 	main(parse_args())

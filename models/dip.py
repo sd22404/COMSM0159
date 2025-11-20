@@ -33,16 +33,12 @@ class DIP(nn.Module):
         )
 
     def encode(self, x):
-        print(x.shape)
         x = self.conv1(x)
         x = nn.MaxPool2d(2)(x)
-        print(x.shape)
         x = self.conv2(x)
         x = nn.MaxPool2d(2)(x)
-        print(x.shape)
         x = self.conv3(x)
         x = nn.MaxPool2d(2)(x)
-        print(x.shape)
         x = self.conv4(x)
         x = nn.MaxPool2d(2)(x)
         return x
