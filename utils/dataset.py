@@ -31,7 +31,8 @@ class DIV2K_X8(Dataset):
 		hr = Image.open(hr_path).convert("RGB")
 		lr = Image.open(lr_path).convert("RGB")
 
-		hr = self.transform(hr)
+		# hr = self.transform(hr)
+		hr = transforms.ToTensor()(hr)
 		lr = self.transform(lr)
 
 		return lr, hr

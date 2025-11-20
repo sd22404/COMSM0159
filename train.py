@@ -21,14 +21,14 @@ def main(args):
 	device = "cuda" if torch.cuda.is_available() else "cpu"
 
 	transforms = T.Compose([
-		T.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+		T.CenterCrop((IMAGE_SIZE, IMAGE_SIZE)),
 		T.ToTensor(),
 	])
 
 	train_dataset = DIV2K_X8(
 		root_hr="dataset/DIV2K_train_HR",
 		root_lr="dataset/DIV2K_train_LR_x8",
-		#transform=transforms,
+		transform=transforms,
 	)
 	dip_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=cpu_count())
 	
