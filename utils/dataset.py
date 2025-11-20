@@ -33,6 +33,7 @@ class DIV2K_X8(Dataset):
 
 		# hr = self.transform(hr)
 		hr = transforms.ToTensor()(hr)
+		hr = transforms.CenterCrop(min(hr.shape[1], hr.shape[2]))(hr)
 		lr = self.transform(lr)
 
 		return lr, hr

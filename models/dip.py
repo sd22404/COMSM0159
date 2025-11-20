@@ -22,7 +22,7 @@ class DIP(nn.Module):
         self.d_conv4 = self.conv_pair(128, 64)
         self.o_conv = self.out(64)
     
-    def conv_pair(self, in_channels, out_channels, kernel_size=3, stride=1, padding=0):
+    def conv_pair(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding),
             nn.ReLU(inplace=True),
@@ -57,23 +57,23 @@ class DIP(nn.Module):
 
     def decode(self, x):
         x = self.t_conv1(x)
-        self.skip4 = nn.functional.interpolate(self.skip4, size=x.shape[2:])
-        x = torch.cat((self.skip4, x), dim=1)
+        skip = nn.functional.interpolate(self.skip4, size=x.shape[2:])
+        x = torch.cat((skip, x), dim=1)
         x = self.d_conv1(x)
 
         x = self.t_conv2(x)
-        self.skip3 = nn.functional.interpolate(self.skip3, size=x.shape[2:])
-        x = torch.cat((self.skip3, x), dim=1)
+        skip = nn.functional.interpolate(self.skip3, size=x.shape[2:])
+        x = torch.cat((skip, x), dim=1)
         x = self.d_conv2(x)
 
         x = self.t_conv3(x)
-        self.skip2 = nn.functional.interpolate(self.skip2, size=x.shape[2:])
-        x = torch.cat((self.skip2, x), dim=1)
+        skip = nn.functional.interpolate(self.skip2, size=x.shape[2:])
+        x = torch.cat((skip, x), dim=1)
         x = self.d_conv3(x)
         
         x = self.t_conv4(x)
-        self.skip1 = nn.functional.interpolate(self.skip1, size=x.shape[2:])
-        x = torch.cat((self.skip1, x), dim=1)
+        skip = nn.functional.interpolate(self.skip1, size=x.shape[2:])
+        x = torch.cat((skip, x), dim=1)
         x = self.d_conv4(x)
         return x
 

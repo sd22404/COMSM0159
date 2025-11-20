@@ -21,7 +21,7 @@ def main(args):
 	device = "cuda" if torch.cuda.is_available() else "cpu"
 
 	transforms = T.Compose([
-		T.CenterCrop((IMAGE_SIZE, IMAGE_SIZE)),
+		T.CenterCrop(IMAGE_SIZE),
 		T.ToTensor(),
 	])
 
@@ -30,16 +30,16 @@ def main(args):
 		root_lr="dataset/DIV2K_train_LR_x8",
 		transform=transforms,
 	)
-	dip_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=cpu_count())
 	
+	dip_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=cpu_count())
+	lr, hr = next(iter(dip_loader))
 
-	model = DIP(height=IMAGE_SIZE, width=IMAGE_SIZE, channels=3).to(device)
+	model = DIP(height=hr.shape[2], width=hr.shape[3], channels=hr.shape[1]).to(device)
 	criterion = torch.nn.MSELoss()
-	optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate)
+	optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
 	trainer = DIPTrainer(model, IMAGE_SIZE, IMAGE_SIZE, criterion, optimizer, device)
-	lr, hr = next(iter(dip_loader))
-	trainer.train(lr, args.epochs)
+	trainer.train(lr, hr, args.epochs)
 	trainer.visualise(lr, hr)
 
 if __name__ == "__main__":
