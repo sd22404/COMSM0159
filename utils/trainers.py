@@ -13,16 +13,16 @@ class DIPTrainer:
 		self.best_loss = float('inf')
 
 	def train(self, lr, hr, epochs):
-		self.noise = torch.randn((1, hr.shape[1], hr.shape[2], hr.shape[3])).to(self.device).detach()
+		self.noise = torch.randn((1, lr.shape[1], lr.shape[2], lr.shape[3])).to(self.device).detach()
 		self.model.train()
 		stagnant = 0
-		patience = 50
-		for epoch in range(1, epochs + 1):
+		patience = 1000
+		for epoch in range(epochs):
 			t0 = time()
 			self.optimizer.zero_grad()
 
 			hr_out = self.model(self.noise)
-			lr_out = F.resize(hr_out, size=lr.shape[2:])
+			lr_out = F.resize(hr_out, size=lr.shape[2:], interpolation=F.InterpolationMode.BICUBIC)
 
 			loss = self.criterion(lr_out, lr.to(self.device))
 			loss.backward()
@@ -33,6 +33,12 @@ class DIPTrainer:
 
 			if loss.item() < self.best_loss:
 				self.best_loss = loss.item()
+				self.best_state = {
+					'model': self.model.state_dict(),
+					'optimizer': self.optimizer.state_dict(),
+					'epoch': epoch,
+					'loss': self.best_loss
+				}
 				stagnant = 0
 			else:
 				stagnant += 1
@@ -41,22 +47,29 @@ class DIPTrainer:
 				print(f"Early stopping: no improvement in {patience} epochs (stopping at epoch {epoch}).")
 				break
 	
+		if self.best_state is not None:
+			self.model.load_state_dict(self.best_state['model'])
+			print(f"Loaded best model from epoch {self.best_state['epoch']} with loss {self.best_state['loss']:.6f}")
+	
 	def visualise(self, lr, hr):
 		self.model.eval()
 		with torch.no_grad():
 			output = self.model(self.noise)
 			output = output.cpu().clamp(0, 1)
 
-		fig, axes = plt.subplots(1, 3, figsize=(12,4))
+		fig, axes = plt.subplots(1, 3, figsize=(15,5))
 
-		axes[0].imshow(output.squeeze().permute(1,2,0))
-		# axes[0].set_title("DIP Output")
-		
-		axes[1].imshow(lr.squeeze().permute(1,2,0))
-		# axes[1].set_title("Low Resolution")
+		axes[0].imshow(lr.squeeze().permute(1,2,0))
+		axes[0].set_title("Low Resolution")
+
+		axes[1].imshow(output.squeeze().permute(1,2,0))
+		axes[1].set_title("DIP Output")
 		
 		axes[2].imshow(hr.squeeze().permute(1,2,0))
-		# axes[2].set_title("High Resolution")
+		axes[2].set_title("High Resolution")
+
+		for a in axes:
+			a.axis("off")
 		
 		os.makedirs("results", exist_ok=True)
 		plt.savefig("results/dip_out.png")
