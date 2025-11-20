@@ -34,4 +34,4 @@ class DIV2K_X8(Dataset):
 		hr = self.transform(hr)
 		lr = self.transform(lr)
 
-		return {"lr": lr, "hr": hr, "filename": self.hr_files[idx]}
+		return lr, hr
