@@ -5,7 +5,7 @@ import torchvision.transforms.functional as F
 import matplotlib.pyplot as plt
 
 class DIPTrainer:
-	def __init__(self, model, width, height, criterion, optimizer, device):
+	def __init__(self, model, criterion, optimizer, device):
 		self.device = device
 		self.model = model.to(device)
 		self.criterion = criterion
@@ -15,8 +15,8 @@ class DIPTrainer:
 	def train(self, lr, hr, epochs):
 		self.noise = torch.randn((1, hr.shape[1], hr.shape[2], hr.shape[3])).to(self.device).detach()
 		self.model.train()
-		epochs_since_best = 0
-		patience = 10
+		stagnant = 0
+		patience = 50
 		for epoch in range(1, epochs + 1):
 			t0 = time()
 			self.optimizer.zero_grad()
@@ -33,11 +33,11 @@ class DIPTrainer:
 
 			if loss.item() < self.best_loss:
 				self.best_loss = loss.item()
-				epochs_since_best = 0
+				stagnant = 0
 			else:
-				epochs_since_best += 1
+				stagnant += 1
 
-			if epochs_since_best >= patience:
+			if stagnant >= patience:
 				print(f"Early stopping: no improvement in {patience} epochs (stopping at epoch {epoch}).")
 				break
 	
