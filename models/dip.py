@@ -7,7 +7,7 @@ class DIP(nn.Module):
 		self.height = height
 		self.width = width
 		self.channels = channels
-		self.noise = torch.randn((1, self.channels, self.height, self.width)).detach()
+		self.register_buffer('z', torch.randn((1, self.channels, self.height, self.width)))
 		self.b = 32
 
 		print(f"DIP initialized with input shape: ({self.channels}, {self.height}, {self.width})")
@@ -45,7 +45,7 @@ class DIP(nn.Module):
 	def out(self, in_channels):
 		return nn.Sequential(
 			nn.Conv2d(in_channels, self.channels, kernel_size=1),
-			# nn.Sigmoid()
+			nn.Sigmoid()
 		)
 
 	def encode(self, x):
@@ -102,8 +102,8 @@ class DIP(nn.Module):
 		x = self.o_conv(x)
 		return x
 
-	def forward(self, x):
-		x, s1, s2, s3, s4 = self.encode(x)
+	def forward(self, z):
+		x, s1, s2, s3, s4 = self.encode(z)
 		x = self.bottleneck(x)
 		x = self.decode(x, s1, s2, s3, s4)
 		x = self.shrink(x)

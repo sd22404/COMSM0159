@@ -21,7 +21,7 @@ class DIPTrainer:
 			self.optimizer.zero_grad()
 
 			with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
-				hr_out = self.model(self.noise)
+				hr_out = self.model(self.model.z)
 				lr_out = F.resize(hr_out, size=lr.shape[2:], interpolation=F.InterpolationMode.BICUBIC)
 				loss = self.criterion(lr_out, lr.to(self.device))
 			
@@ -54,7 +54,7 @@ class DIPTrainer:
 	def visualise(self, lr, hr):
 		self.model.eval()
 		with torch.no_grad():
-			output = self.model(self.noise)
+			output = self.model(self.model.z)
 			output = output.cpu().clamp(0, 1)
 
 		fig, axes = plt.subplots(1, 3, figsize=(15,5))
