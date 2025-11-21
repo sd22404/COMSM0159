@@ -12,19 +12,19 @@ class DIPTrainer:
 		self.optimizer = optimizer
 		self.best_loss = float('inf')
 
-	def train(self, lr, hr, epochs):
-		self.noise = torch.randn((1, lr.shape[1], lr.shape[2], lr.shape[3])).to(self.device).detach()
+	def train(self, lr, epochs):
 		self.model.train()
 		stagnant = 0
-		patience = 1000
+		patience = 200
 		for epoch in range(epochs):
 			t0 = time()
 			self.optimizer.zero_grad()
 
-			hr_out = self.model(self.noise)
-			lr_out = F.resize(hr_out, size=lr.shape[2:], interpolation=F.InterpolationMode.BICUBIC)
-
-			loss = self.criterion(lr_out, lr.to(self.device))
+			with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+				hr_out = self.model(self.noise)
+				lr_out = F.resize(hr_out, size=lr.shape[2:], interpolation=F.InterpolationMode.BICUBIC)
+				loss = self.criterion(lr_out, lr.to(self.device))
+			
 			loss.backward()
 			self.optimizer.step()
 
