@@ -22,12 +22,12 @@ class DIV2K_X8(Dataset):
 		self.hr_transform = transforms.Compose([
 			hr_transform, 
 			transforms.ToTensor(),
-			transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+			# transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 		])
 		self.lr_transform = transforms.Compose([
 			lr_transform, 
 			transforms.ToTensor(),
-			transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+			# transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 		])
 
 	def __len__(self):
