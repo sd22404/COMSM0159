@@ -5,14 +5,16 @@ import torchvision.transforms.functional as F
 import matplotlib.pyplot as plt
 
 class DIPTrainer:
-	def __init__(self, model, criterion, optimizer, device):
+	def __init__(self, model, criterion, optimizer, scheduler, device, use_amp=False, use_grad_scaler=False):
 		self.device = device
 		self.model = model.to(device)
 		self.criterion = criterion
 		self.optimizer = optimizer
 		self.best_loss = float('inf')
 		self.best_state = None
-		self.scaler = torch.amp.GradScaler(enabled=(device == 'cuda'))
+		self.scaler = torch.amp.GradScaler(enabled=(device == 'cuda' and use_grad_scaler))
+		self.amp = use_amp
+		self.scheduler = scheduler
 
 	def train(self, lr, hr, epochs):
 		self.model.train()
@@ -22,7 +24,7 @@ class DIPTrainer:
 			t0 = time()
 			self.optimizer.zero_grad()
 
-			with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16, enabled=(self.device == 'cuda')):
+			with torch.amp.autocast(device_type=self.device, dtype=torch.bfloat16, enabled=(self.device == 'cuda' and self.amp)):
 				hr_out = self.model(self.model.z)
 				lr_out = F.resize(hr_out, size=lr.shape[2:], interpolation=F.InterpolationMode.BICUBIC)
 				loss = self.criterion(lr_out, lr.to(self.device))
@@ -51,6 +53,9 @@ class DIPTrainer:
 			if stagnant >= patience:
 				print(f"Early stopping: no improvement in {patience} epochs (stopping at epoch {epoch}).")
 				break
+				
+			if self.scheduler is not None:
+				self.scheduler.step()
 	
 		if self.best_state is not None:
 			self.model.load_state_dict(self.best_state['model'])

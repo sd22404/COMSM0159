@@ -10,9 +10,12 @@ from utils.dip_trainer import DIPTrainer
 
 def parse_args():
 	parser = argparse.ArgumentParser()
-	parser.add_argument("--learning-rate", "-lr", default=1e-3, type=float, help="Learning rate")
+	parser.add_argument("--learning-rate", "-lr", default=1e-2, type=float, help="Learning rate")
 	parser.add_argument("--batch-size", "-bs", default=1, type=int, help="Number of images within each mini-batch")
 	parser.add_argument("--epochs", "-e", default=2000, type=int, help="Number of training epochs")
+	parser.add_argument("--scheduler", action='store_true', help="Use learning rate scheduler")
+	parser.add_argument("--amp", action='store_true', help="Use automatic mixed precision")
+	parser.add_argument("--grad-scaler", action='store_true', help="Use gradient scaler for mixed precision training")
 	return parser.parse_args()
 
 def main(args):
@@ -29,8 +32,9 @@ def main(args):
 	model = UNet(height=hr.shape[2], width=hr.shape[3]).to(device)
 	criterion = torch.nn.MSELoss()
 	optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+	scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs) if args.scheduler else None
 
-	trainer = DIPTrainer(model, criterion, optimizer, device)
+	trainer = DIPTrainer(model, criterion, optimizer, scheduler, device, use_amp=args.amp, use_grad_scaler=args.grad_scaler)
 	trainer.train(lr, hr, args.epochs)
 
 if __name__ == "__main__":
