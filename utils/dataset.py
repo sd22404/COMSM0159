@@ -44,3 +44,20 @@ class DIV2K_X8(Dataset):
 		lr = self.lr_transform(lr)
 
 		return lr, hr
+
+class DIV2K_X8_DIP(DIV2K_X8):
+	"""
+	Loads paired LR (x8) and HR images from DIV2K 2018 dataset for DIP training.
+	Folder structure:
+		root_hr/0001.png
+		root_lr/0001x8.png
+	"""
+	def __init__(self, hr_root, lr_root, hr_transform=transforms.Lambda(lambda x: x), lr_transform=transforms.Lambda(lambda x: x), idx=0):
+		super().__init__(hr_root, lr_root, hr_transform, lr_transform)
+		self.idx = idx
+	
+	def __len__(self):
+		return 1
+	
+	def __getitem__(self, idx):
+		return super().__getitem__(self.idx)

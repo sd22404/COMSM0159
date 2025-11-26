@@ -9,23 +9,22 @@ import lpips as lp
 
 from multiprocessing import cpu_count
 
-from models.old.diffusion import Denoiser, Diffusion
-from models.diffusion import SR3UNet, Diffuser
+from models.inr import SRINR
 from utils.dataset import DIV2K_X8
-from utils.trainers import DiffusionTrainer
+from utils.trainers import INRTrainer
 
 def parse_args():
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--learning-rate", "-lr", default=1e-4, type=float, help="Learning rate")
 	parser.add_argument("--batch-size", "-bs", default=16, type=int, help="Number of images within each mini-batch")
 	parser.add_argument("--epochs", "-e", default=10, type=int, help="Number of training epochs")
-	parser.add_argument("--iterations", "-i", default=2000, type=int, help="Number of diffusion steps")
+	parser.add_argument("--load-checkpoint", "-c", default=None, type=Path, help="Load from checkpoint if available")
+	parser.add_argument("--checkpoint-dir", default="checkpoints", type=Path, help="Path to save checkpoint")
 	parser.add_argument("--schedule", action='store_true', help="Use learning rate scheduler")
 	parser.add_argument("--amp", action='store_true', help="Use automatic mixed precision")
 	parser.add_argument("--grad-scaler", action='store_true', help="Use gradient scaler for mixed precision training")
 	parser.add_argument("--no-train", action='store_true', help="Skip training and only run visualization")
-	parser.add_argument("--load-checkpoint", "-c", default=None, type=Path, help="Load from checkpoint if available")
-	parser.add_argument("--checkpoint-dir", default="checkpoints", type=Path, help="Path to save checkpoint")
+	parser.add_argument("--pixel-amp-weight", default=1.0, type=float, help="Weight for pixel error amplified loss")
 	return parser.parse_args()
 
 def main(args):
@@ -60,11 +59,7 @@ def main(args):
 	train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=cpu_count())
 	val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=cpu_count())
 	
-	# model = Denoiser(image_resolution=(img_size, img_size, 3))
-	# diff = Diffusion(denoiser=model, image_resolution=(img_size, img_size, 3), n_times=args.iterations).to(device)
-	model = SR3UNet(base_channels=64, res_blocks_per_scale=1)
-	diff = Diffuser(model, image_resolution=(img_size, img_size, 3), n_times=args.iterations).to(device)
-
+	model = SRINR()
 	criterion = torch.nn.MSELoss()
 	optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
 	scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs) if args.schedule else None
@@ -73,12 +68,12 @@ def main(args):
 	if args.load_checkpoint is not None and args.load_checkpoint.exists():
 		checkpoint = torch.load(args.load_checkpoint, map_location=device)
 		# start = checkpoint['epoch'] + 1
-		diff.load_state_dict(checkpoint['model'])
+		model.load_state_dict(checkpoint['model'])
 		optimizer.load_state_dict(checkpoint['optimizer'])
 		print(f"Loaded checkpoint from {args.load_checkpoint}")
 
-	trainer = DiffusionTrainer(
-		diff,
+	trainer = INRTrainer(
+		model,
 		criterion,
 		optimizer,
 		scheduler,
@@ -88,9 +83,8 @@ def main(args):
 		psnr,
 		ssim,
 		lpips,
-		args.amp,
-		args.grad_scaler,
-		val_interval=2,
+		use_amp=args.amp,
+		use_grad_scaler=args.grad_scaler,
 	)
 
 	if not args.no_train:
