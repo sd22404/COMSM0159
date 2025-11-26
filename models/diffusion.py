@@ -101,8 +101,8 @@ class Diffuser(nn.Module):
 			lr_up = lr_up[:N]
 		x_t = torch.randn((N, self.img_C, self.img_H, self.img_W), device=device)
 		for step in range(self.n_times - 1, -1, -1):
-			progress = (self.n_times - 1 - step) / max(self.n_times - 1, 1)
-			print("█" * int(progress * 50) + "-" * int((1 - progress) * 50), end=f" {progress * 100:2.0f}%\r", flush=True)
+			# progress = (self.n_times - 1 - step) / max(self.n_times - 1, 1)
+			# print("█" * int(progress * 50) + "-" * int((1 - progress) * 50), end=f" {progress * 100:2.0f}%\r", flush=True)
 			timestep = torch.full((N,), step, device=device, dtype=torch.long)
 			x_t = self.denoise_at_t(x_t, timestep, lr_up)
 		x_0 = self.reverse_scale_to_zero_to_one(x_t)

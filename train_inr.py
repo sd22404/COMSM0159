@@ -15,14 +15,14 @@ from utils.trainers import INRTrainer
 
 def parse_args():
 	parser = argparse.ArgumentParser()
-	parser.add_argument("--learning-rate", "-lr", default=1e-4, type=float, help="Learning rate")
-	parser.add_argument("--batch-size", "-bs", default=16, type=int, help="Number of images within each mini-batch")
-	parser.add_argument("--epochs", "-e", default=10, type=int, help="Number of training epochs")
+	parser.add_argument("--learning-rate", "-lr", default=1e-2, type=float, help="Learning rate")
+	parser.add_argument("--batch-size", "-bs", default=32, type=int, help="Number of images within each mini-batch")
+	parser.add_argument("--epochs", "-e", default=100, type=int, help="Number of training epochs")
 	parser.add_argument("--load-checkpoint", "-c", default=None, type=Path, help="Load from checkpoint if available")
 	parser.add_argument("--checkpoint-dir", default="checkpoints", type=Path, help="Path to save checkpoint")
+	parser.add_argument("--amp", default=True, help="Use automatic mixed precision")
+	parser.add_argument("--grad-scaler", default=True, help="Use gradient scaler for mixed precision training")
 	parser.add_argument("--schedule", action='store_true', help="Use learning rate scheduler")
-	parser.add_argument("--amp", action='store_true', help="Use automatic mixed precision")
-	parser.add_argument("--grad-scaler", action='store_true', help="Use gradient scaler for mixed precision training")
 	parser.add_argument("--no-train", action='store_true', help="Skip training and only run visualization")
 	parser.add_argument("--pixel-amp-weight", default=1.0, type=float, help="Weight for pixel error amplified loss")
 	return parser.parse_args()
@@ -34,9 +34,6 @@ def main(args):
 	img_size = 256
 	hr_crop = T.CenterCrop(img_size)
 	lr_crop = T.CenterCrop(img_size // 8)
-
-	# hr_crop = T.RandomCrop(img_size)
-	# lr_crop = T.RandomCrop(img_size // 8)
 
 	# metrics
 	psnr = PSNR(data_range=1.0).to(device)
@@ -52,12 +49,12 @@ def main(args):
 	val_dataset = DIV2K_X8(
 		hr_root="dataset/DIV2K_valid_HR",
 		lr_root="dataset/DIV2K_valid_LR_x8",
-		# hr_transform=hr_crop,
-		# lr_transform=lr_crop
+		hr_transform=hr_crop,
+		lr_transform=lr_crop
 	)
 	
 	train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=cpu_count())
-	val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=cpu_count())
+	val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=cpu_count())
 	
 	model = SRINR()
 	criterion = torch.nn.MSELoss()
@@ -67,34 +64,31 @@ def main(args):
 	start = 0
 	if args.load_checkpoint is not None and args.load_checkpoint.exists():
 		checkpoint = torch.load(args.load_checkpoint, map_location=device)
-		# start = checkpoint['epoch'] + 1
+		start = checkpoint['epoch'] + 1
 		model.load_state_dict(checkpoint['model'])
 		optimizer.load_state_dict(checkpoint['optimizer'])
 		print(f"Loaded checkpoint from {args.load_checkpoint}")
 
 	trainer = INRTrainer(
-		model,
-		criterion,
-		optimizer,
-		scheduler,
-		train_loader,
-		val_loader,
-		device,
-		psnr,
-		ssim,
-		lpips,
+		model=model,
+		criterion=criterion,
+		optimizer=optimizer,
+		train_loader=train_loader,
+		val_loader=val_loader,
+		scheduler=scheduler,
+		device=device,
+		psnr=psnr,
+		ssim=ssim,
+		lpips=lpips,
 		use_amp=args.amp,
 		use_grad_scaler=args.grad_scaler,
+		val_interval=args.epochs // 10,
+		save_interval=args.epochs // 10,
+		checkpoint_prefix="inr"
 	)
 
 	if not args.no_train:
 		trainer.train(start, args.epochs)
-
-	lr, hr = train_loader.dataset[1]
-	lr = lr.unsqueeze(0)
-	hr = hr.unsqueeze(0)
-
-	trainer.infer(lr, hr)
 
 if __name__ == "__main__":
 	main(parse_args())

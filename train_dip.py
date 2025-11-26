@@ -13,16 +13,20 @@ from utils.trainers import DIPTrainer
 
 def parse_args():
 	parser = argparse.ArgumentParser()
-	parser.add_argument("--learning-rate", "-lr", default=5e-3, type=float, help="Learning rate")
+	parser.add_argument("--learning-rate", "-lr", default=1e-2, type=float, help="Learning rate")
 	parser.add_argument("--batch-size", "-bs", default=1, type=int, help="Number of images within each mini-batch")
 	parser.add_argument("--epochs", "-e", default=4000, type=int, help="Number of training epochs")
 	parser.add_argument("--scheduler", action='store_true', help="Use learning rate scheduler")
-	parser.add_argument("--amp", action='store_true', help="Use automatic mixed precision")
-	parser.add_argument("--grad-scaler", action='store_true', help="Use gradient scaler for mixed precision training")
+	parser.add_argument("--amp", default=True, help="Use automatic mixed precision")
+	parser.add_argument("--grad-scaler", default=True, help="Use gradient scaler for mixed precision training")
 	return parser.parse_args()
 
 def main(args):
 	device = "cuda" if torch.cuda.is_available() else "cpu"
+
+	img_size = 256
+	hr_crop = T.CenterCrop(img_size)
+	lr_crop = T.CenterCrop(img_size // 8)
 
 	# metrics
 	psnr = PSNR(data_range=1.0).to(device)
@@ -32,16 +36,20 @@ def main(args):
 	train_dataset = DIV2K_X8_DIP(
 		hr_root="dataset/DIV2K_train_HR",
 		lr_root="dataset/DIV2K_train_LR_x8",
+		# hr_transform=hr_crop,
+		# lr_transform=lr_crop,
 		idx=1
 	)
 	val_dataset = DIV2K_X8_DIP(
 		hr_root="dataset/DIV2K_valid_HR",
 		lr_root="dataset/DIV2K_valid_LR_x8",
+		# hr_transform=hr_crop,
+		# lr_transform=lr_crop,
 		idx=1
 	)
 
-	train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=cpu_count())
-	val_loader = DataLoader(train_dataset, batch_size=1, shuffle=False, num_workers=cpu_count())
+	train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=cpu_count())
+	val_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, num_workers=cpu_count())
 
 	lr, hr = next(iter(val_loader))
 	img = hr.squeeze(0)
@@ -61,9 +69,25 @@ def main(args):
 
 	criterion = torch.nn.MSELoss()
 	optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
-	scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs) if args.scheduler else None
+	scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.epochs // 100, gamma=0.8) if args.scheduler else None
 
-	trainer = DIPTrainer(model, criterion, optimizer, train_loader, val_loader, scheduler, device, psnr, ssim, lpips, args.amp, args.grad_scaler, val_interval=50, save_interval=500, checkpoint_prefix="dip")
+	trainer = DIPTrainer(
+		model=model,
+		criterion=criterion,
+		optimizer=optimizer,
+		train_loader=train_loader,
+		val_loader=val_loader,
+		scheduler=scheduler,
+		device=device,
+		psnr=psnr,
+		ssim=ssim,
+		lpips=lpips,
+		use_amp=args.amp,
+		use_grad_scaler=args.grad_scaler,
+		val_interval=args.epochs // 10,
+		save_interval=args.epochs // 100,
+		checkpoint_prefix="dip"
+	)
 	trainer.train(0, args.epochs)
 
 if __name__ == "__main__":

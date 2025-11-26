@@ -56,21 +56,21 @@ class Trainer:
 		os.makedirs("checkpoints", exist_ok=True)
 		return os.path.join("checkpoints", f"{self.checkpoint_prefix}_{suffix}.pth")
 
-	def _save_state(self, epoch, loss, save_last=True):
+	def _save_state(self, epoch, loss, save=True):
 		state = {
 			"model": self.model.state_dict(),
 			"optimizer": self.optimizer.state_dict(),
 			"epoch": epoch,
 			"loss": loss,
 		}
-		# if save_last:
-		# 	state_last = {k: v for k, v in state.items()}
-		# 	torch.save(state_last, self._checkpoint_path("last"))
-		# if loss < self.best_loss:
-		# 	self.best_loss = loss
-		# 	state_best = {k: v for k, v in state.items()}
-		# 	torch.save(state_best, self._checkpoint_path("best"))
-		# 	self.best_state = state_best
+		if save:
+			state_last = {k: v for k, v in state.items()}
+			torch.save(state_last, self._checkpoint_path("last"))
+			if loss < self.best_loss:
+				self.best_loss = loss
+				state_best = {k: v for k, v in state.items()}
+				torch.save(state_best, self._checkpoint_path("best"))
+				self.best_state = state_best
 
 	def _step_scheduler(self):
 		if self.scheduler is not None:
@@ -78,14 +78,15 @@ class Trainer:
 
 	def _train_loop(self, start, epochs, step_fn):
 		self.model.train()
-		print(f"Starting training from epoch {start}\n")
+		if epochs - start > 0:
+			print(f"Starting training from epoch {start}...\n")
 		for epoch in range(start, epochs):
 			t0 = time()
 			total_loss = 0.0
 			total_metrics = {}
 			num_batches = len(self.train_loader)
 			step_count = 0
-			for step_count, batch in enumerate(self.train_loader, start=1):
+			for step_count, batch in enumerate(self.train_loader):
 				self.optimizer.zero_grad()
 				with self.autocast():
 					loss, metrics = step_fn(batch)
@@ -98,41 +99,45 @@ class Trainer:
 				for key, value in metrics.items():
 					total_metrics[key] = total_metrics.get(key, 0) + value
 				bar_len = 50
-				progress = bar_len * step_count // num_batches
-				print("█" * progress + "-" * (bar_len - progress), end=" \r", flush=True)
+				progress = bar_len * (step_count + 1) // num_batches
+				print("█" * progress + "-" * (bar_len - progress), end=f" {progress * 100 / bar_len:2.0f}%\r", flush=True)
 
-			if step_count == 0:
-				continue
-
-			avg_loss = total_loss / step_count
-			avg_metrics = {key: value / step_count for key, value in total_metrics.items()}
+			avg_loss = total_loss / (step_count + 1)
+			avg_metrics = {key: value / (step_count + 1) for key, value in total_metrics.items()}
 			tT = time() - t0
-			print(f"Epoch [{epoch + 1}/{epochs}] - Loss: {avg_loss:.6f}, Time: {tT:.3f} seconds" + "".join(f", {key.upper()}: {value:.3f}" for key, value in avg_metrics.items()))
+			print(f"Epoch [{epoch + 1}/{epochs}] - Loss: {avg_loss:.6f}, Time: {tT:.3f} seconds" + "                         ".join(f", {key.upper()}: {value:.3f}" for key, value in avg_metrics.items()))
 
-			save_last = (epoch + 1) % self.save_interval == 0 or (epoch + 1) == epochs
-			self._save_state(epoch, avg_loss, save_last=save_last)
+			save = (epoch + 1) % self.save_interval == 0 or (epoch + 1) == epochs
+			self._save_state(epoch, avg_loss, save=save)
 
-			if epoch % self.val_interval == 0 and epoch != 0:
+			if (epoch + 1) % self.val_interval == 0:
 				self.val(epoch)
 
 		if self.best_state is not None:
 			self.model.load_state_dict(self.best_state["model"])
-			print(f"Loaded best model from epoch {self.best_state['epoch'] + 1} with loss {self.best_state['loss']:.6f}")
+			print(f"Loaded best model from epoch {self.best_state['epoch'] + 1} with loss {self.best_state['loss']:.6f}.")
+		
+		self.val(epochs)
 
 	def val(self, epoch):
 		total_metrics = {}
-		num_batches = 0
-		for i, batch in enumerate(self.val_loader):
+		step_count = 0
+		bar_len = 50
+		print(f"\nStarting validation for epoch {epoch + 1}...")
+
+		print("-" * bar_len, end=f" {0:2.0f}%\r", flush=True)
+		for step_count, batch in enumerate(self.val_loader):
 			lrs, hrs = batch
-			metrics = self.infer(lrs, hrs, suffix=f"val_{epoch}", save_img=(i == 0))
+			metrics = self.infer(lrs, hrs, suffix=f"{epoch + 1}", save_img=(step_count == 0))
+
+			progress = bar_len * (step_count + 1) // len(self.val_loader)
+			print("█" * progress + "-" * (bar_len - progress), end=f" {progress * 100 / bar_len:2.0f}%\r", flush=True)
 			
 			for k, v in metrics.items():
 				total_metrics[k] = total_metrics.get(k, 0) + v
-			num_batches += 1
-		
-		if num_batches > 0:
-			avg_metrics = {k: v / num_batches for k, v in total_metrics.items()}
-			print(f"Validation Epoch [{epoch}] - " + ", ".join(f"{k}: {v:.3f}" for k, v in avg_metrics.items()))
+
+		avg_metrics = {k: v / (step_count + 1) for k, v in total_metrics.items()}
+		print(f"Validation Epoch [{epoch + 1}] - " + ", ".join(f"{k}: {v:.3f}" for k, v in avg_metrics.items()))
 		
 		torch.cuda.empty_cache()
 
@@ -151,7 +156,7 @@ class Trainer:
 
 		psnr_val = self.psnr(out, hrs).item()
 		ssim_val = self.ssim(out, hrs).item()
-		lpips_val = self.lpips(out, hrs).item()
+		lpips_val = self.lpips(out, hrs).mean().item()
 
 		if save_img:
 			out_cpu = out.detach().cpu()
@@ -160,23 +165,23 @@ class Trainer:
 
 			batch_size = out_cpu.shape[0]
 			fig, axes = plt.subplots(3, batch_size, figsize=(max(batch_size * 6, 12), 18), squeeze=False)
-			fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0.02, hspace=0.05)
+			fig.subplots_adjust(left=0, right=1, top=1, bottom=0, hspace=0, wspace=0)
 			
 			for idx in range(batch_size):
 				axes[0, idx].imshow(lr_cpu[idx].permute(1, 2, 0).float())
-				axes[0, idx].set_title(f"LR #{idx}")
+				# axes[0, idx].set_title(f"LR #{idx}")
 				axes[1, idx].imshow(out_cpu[idx].permute(1, 2, 0).float())
-				axes[1, idx].set_title(f"{self.mid_title} #{idx}")
+				# axes[1, idx].set_title(f"{self.mid_title} #{idx}")
 				axes[2, idx].imshow(hr_cpu[idx].permute(1, 2, 0).float())
-				axes[2, idx].set_title(f"HR #{idx}")
+				# axes[2, idx].set_title(f"HR #{idx}")
 			for row in range(3):
 				for col in range(batch_size):
 					axes[row, col].axis("off")
-					axes[row, col].title.set_fontsize(18)
-			axes[1, 0].set_ylabel(
-				f"PSNR: {psnr_val:.3f}\nSSIM: {ssim_val:.3f}\nLPIPS: {lpips_val:.3f}",
-				fontsize=18,
-			)
+			# 		axes[row, col].title.set_fontsize(30)
+			# axes[1, 0].set_xlabel(
+			# 	f"PSNR: {psnr_val:.3f}\nSSIM: {ssim_val:.3f}\nLPIPS: {lpips_val:.3f}",
+			# 	fontsize=18,
+			# )
 
 			os.makedirs(self.visual_dir, exist_ok=True)
 			plt.savefig(os.path.join(self.visual_dir, f"{self.checkpoint_prefix}_{suffix}.png"))
@@ -214,26 +219,25 @@ class INRTrainer(Trainer):
 		checkpoint_prefix=None,
 	):
 		super().__init__(
-			model,
-			criterion,
-			optimizer,
-			train_loader,
-			val_loader,
-			scheduler,
-			device,
-			psnr,
-			ssim,
-			lpips,
-			use_amp,
-			use_grad_scaler,
-			val_interval,
-			save_interval,
-			checkpoint_prefix,
+			model=model,
+			criterion=criterion,
+			optimizer=optimizer,
+			train_loader=train_loader,
+			val_loader=val_loader,
+			scheduler=scheduler,
+			device=device,
+			psnr=psnr,
+			ssim=ssim,
+			lpips=lpips,
+			use_amp=use_amp,
+			use_grad_scaler=use_grad_scaler,
+			val_interval=val_interval,
+			save_interval=save_interval,
+			checkpoint_prefix=checkpoint_prefix,
 		)
 
 		self.visual_dir = "results/inr"
 		self.mid_title = "INR Output"
-		self.save_interval = save_interval
 
 	def _create_query_grid(self, batch_size, height, width):
 		y = torch.linspace(0.0, 1.0, steps=height, device=self.device)
@@ -279,26 +283,25 @@ class DIPTrainer(Trainer):
 		checkpoint_prefix=None,
 	):
 		super().__init__(
-			model,
-			criterion,
-			optimizer,
-			train_loader,
-			val_loader,
-			scheduler,
-			device,
-			psnr,
-			ssim,
-			lpips,
-			use_amp,
-			use_grad_scaler,
-			val_interval,
-			save_interval,
-			checkpoint_prefix,
+			model=model,
+			criterion=criterion,
+			optimizer=optimizer,
+			train_loader=train_loader,
+			val_loader=val_loader,
+			scheduler=scheduler,
+			device=device,
+			psnr=psnr,
+			ssim=ssim,
+			lpips=lpips,
+			use_amp=use_amp,
+			use_grad_scaler=use_grad_scaler,
+			val_interval=val_interval,
+			save_interval=save_interval,
+			checkpoint_prefix=checkpoint_prefix,
 		)
 
 		self.visual_dir = "results/dip"
 		self.mid_title = "DIP Output"
-		self.save_interval = save_interval
 
 	def train(self, start, epochs):
 		def step_fn(batch):
@@ -337,20 +340,20 @@ class DiffusionTrainer(Trainer):
 		checkpoint_prefix=None,
 	):
 		super().__init__(
-			diff,
-			criterion,
-			optimizer,
-			train_loader,
-			val_loader,
-			scheduler,
-			device,
-			psnr,
-			ssim,
-			lpips,
-			use_amp,
-			use_grad_scaler,
-			val_interval,
-			save_interval,
+			model=diff,
+			criterion=criterion,
+			optimizer=optimizer,
+			train_loader=train_loader,
+			val_loader=val_loader,
+			scheduler=scheduler,
+			device=device,
+			psnr=psnr,
+			ssim=ssim,
+			lpips=lpips,
+			use_amp=use_amp,
+			use_grad_scaler=use_grad_scaler,
+			val_interval=val_interval,
+			save_interval=save_interval,
 		)
 
 		self.diff = self.model
@@ -363,8 +366,8 @@ class DiffusionTrainer(Trainer):
 			lrs, hrs = batch
 			lrs = lrs.to(self.device)
 			hrs = hrs.to(self.device)
-			self.diff.lrs_up = F.interpolate(lrs, scale_factor=8, mode="bicubic")
-			_, e, pred_e = self.diff(hrs, self.diff.lrs_up)
+			lrs_up = F.interpolate(lrs, scale_factor=8, mode="bicubic")
+			_, e, pred_e = self.diff(hrs, lrs_up)
 			return self.criterion(pred_e, e), {}
 
 		self._train_loop(start, epochs, step_fn)
@@ -374,4 +377,3 @@ class DiffusionTrainer(Trainer):
 
 	def _generate_output(self, lrs, hrs):
 		return self.diff.sample(lrs.shape[0], lr_up=F.interpolate(lrs, scale_factor=8, mode="bicubic"))
-	
