@@ -9,13 +9,13 @@ import lpips as lp
 
 from multiprocessing import cpu_count
 
-from models.inr import SRINR
-from utils.dataset import DIV2K_X8
+from models.inr import LIIF
+from utils.dataset import INRDataset
 from utils.trainers import INRTrainer
 
 def parse_args():
 	parser = argparse.ArgumentParser()
-	parser.add_argument("--learning-rate", "-lr", default=1e-2, type=float, help="Learning rate")
+	parser.add_argument("--learning-rate", "-lr", default=5e-3, type=float, help="Learning rate")
 	parser.add_argument("--batch-size", "-bs", default=32, type=int, help="Number of images within each mini-batch")
 	parser.add_argument("--epochs", "-e", default=100, type=int, help="Number of training epochs")
 	parser.add_argument("--load-checkpoint", "-c", default=None, type=Path, help="Load from checkpoint if available")
@@ -24,12 +24,10 @@ def parse_args():
 	parser.add_argument("--grad-scaler", default=True, help="Use gradient scaler for mixed precision training")
 	parser.add_argument("--schedule", action='store_true', help="Use learning rate scheduler")
 	parser.add_argument("--no-train", action='store_true', help="Skip training and only run visualization")
-	parser.add_argument("--pixel-amp-weight", default=1.0, type=float, help="Weight for pixel error amplified loss")
 	return parser.parse_args()
 
 def main(args):
 	device = "cuda" if torch.cuda.is_available() else "cpu"
-	os.makedirs(args.checkpoint_dir, exist_ok=True)
 
 	img_size = 256
 	hr_crop = T.CenterCrop(img_size)
@@ -40,23 +38,23 @@ def main(args):
 	ssim = SSIM(data_range=1.0).to(device)
 	lpips = lp.LPIPS().to(device)
 
-	train_dataset = DIV2K_X8(
+	train_dataset = INRDataset(
 		hr_root="dataset/DIV2K_train_HR",
 		lr_root="dataset/DIV2K_train_LR_x8",
 		hr_transform=hr_crop,
-		lr_transform=lr_crop
+		lr_transform=lr_crop,
 	)
-	val_dataset = DIV2K_X8(
+	val_dataset = INRDataset(
 		hr_root="dataset/DIV2K_valid_HR",
 		lr_root="dataset/DIV2K_valid_LR_x8",
 		hr_transform=hr_crop,
-		lr_transform=lr_crop
+		lr_transform=lr_crop,
 	)
 	
 	train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=cpu_count())
 	val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=cpu_count())
 	
-	model = SRINR()
+	model = LIIF().to(device)
 	criterion = torch.nn.MSELoss()
 	optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
 	scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs) if args.schedule else None

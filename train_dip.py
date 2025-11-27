@@ -8,7 +8,7 @@ import lpips as lp
 from multiprocessing import cpu_count
 
 from models.dip import UNet, skip
-from utils.dataset import DIV2K_X8, DIV2K_X8_DIP
+from utils.dataset import PairDataset, DIPDataset
 from utils.trainers import DIPTrainer
 
 def parse_args():
@@ -33,14 +33,14 @@ def main(args):
 	ssim = SSIM(data_range=1.0).to(device)
 	lpips = lp.LPIPS().to(device)
 
-	train_dataset = DIV2K_X8_DIP(
+	train_dataset = DIPDataset(
 		hr_root="dataset/DIV2K_train_HR",
 		lr_root="dataset/DIV2K_train_LR_x8",
 		# hr_transform=hr_crop,
 		# lr_transform=lr_crop,
 		idx=1
 	)
-	val_dataset = DIV2K_X8_DIP(
+	val_dataset = DIPDataset(
 		hr_root="dataset/DIV2K_valid_HR",
 		lr_root="dataset/DIV2K_valid_LR_x8",
 		# hr_transform=hr_crop,

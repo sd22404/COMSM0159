@@ -119,7 +119,7 @@ class Trainer:
 		
 		self.val(epochs)
 
-	def val(self, epoch):
+	def _val_loop(self, epoch, step_fn):
 		total_metrics = {}
 		step_count = 0
 		bar_len = 50
@@ -127,8 +127,7 @@ class Trainer:
 
 		print("-" * bar_len, end=f" {0:2.0f}%\r", flush=True)
 		for step_count, batch in enumerate(self.val_loader):
-			lrs, hrs = batch
-			metrics = self.infer(lrs, hrs, suffix=f"{epoch + 1}", save_img=(step_count == 0))
+			metrics = step_fn(batch, step_count)
 
 			progress = bar_len * (step_count + 1) // len(self.val_loader)
 			print("█" * progress + "-" * (bar_len - progress), end=f" {progress * 100 / bar_len:2.0f}%\r", flush=True)
@@ -141,19 +140,23 @@ class Trainer:
 		
 		torch.cuda.empty_cache()
 
-	def infer(self, lrs, hrs, out=None, suffix="test", save_img=True):
-		prev_mode = self.model.training
-		lrs = lrs.to(self.device)
-		hrs = hrs.to(self.device)
+	def val(self, epoch):
+		def step_fn(batch, step):
+			lrs, hrs = batch
+			lrs = lrs.to(self.device)
+			hrs = hrs.to(self.device)
 
-		if out is None:
-			self.model.eval()
 			with torch.no_grad():
 				out = self._generate_output(lrs, hrs)
-		else:
-			out = out.to(self.device)
-		out = out.clamp(0, 1)
+				out = out.clamp(0, 1)
 
+			return self._display(lrs, hrs, out, suffix=f"{epoch + 1}", save_img=(step == 0))
+
+		self.model.eval()
+		self._val_loop(epoch, step_fn)
+		self.model.train()
+
+	def _display(self, lrs, hrs, out, suffix="test", save_img=True):
 		psnr_val = self.psnr(out, hrs).item()
 		ssim_val = self.ssim(out, hrs).item()
 		lpips_val = self.lpips(out, hrs).mean().item()
@@ -169,28 +172,17 @@ class Trainer:
 			
 			for idx in range(batch_size):
 				axes[0, idx].imshow(lr_cpu[idx].permute(1, 2, 0).float())
-				# axes[0, idx].set_title(f"LR #{idx}")
 				axes[1, idx].imshow(out_cpu[idx].permute(1, 2, 0).float())
-				# axes[1, idx].set_title(f"{self.mid_title} #{idx}")
 				axes[2, idx].imshow(hr_cpu[idx].permute(1, 2, 0).float())
-				# axes[2, idx].set_title(f"HR #{idx}")
 			for row in range(3):
 				for col in range(batch_size):
 					axes[row, col].axis("off")
-			# 		axes[row, col].title.set_fontsize(30)
-			# axes[1, 0].set_xlabel(
-			# 	f"PSNR: {psnr_val:.3f}\nSSIM: {ssim_val:.3f}\nLPIPS: {lpips_val:.3f}",
-			# 	fontsize=18,
-			# )
 
 			os.makedirs(self.visual_dir, exist_ok=True)
 			plt.savefig(os.path.join(self.visual_dir, f"{self.checkpoint_prefix}_{suffix}.png"))
 			plt.close(fig)
 			del out_cpu, lr_cpu, hr_cpu
 
-		if prev_mode:
-			self.model.train()
-		
 		metrics = {"PSNR": psnr_val, "SSIM": ssim_val, "LPIPS": lpips_val}
 		del lrs, hrs, out
 		return metrics
@@ -239,27 +231,36 @@ class INRTrainer(Trainer):
 		self.visual_dir = "results/inr"
 		self.mid_title = "INR Output"
 
-	def _create_query_grid(self, batch_size, height, width):
-		y = torch.linspace(0.0, 1.0, steps=height, device=self.device)
-		x = torch.linspace(0.0, 1.0, steps=width, device=self.device)
-		grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
-		coords = torch.stack((grid_x, grid_y), dim=-1)
-		coords = coords.view(1, height * width, 2).expand(batch_size, -1, -1)
-		return coords
-
 	def train(self, start, epochs):
 		def step_fn(batch):
-			lrs, hrs = batch
+			lrs, hrs, coords = batch
 			lrs = lrs.to(self.device)
 			hrs = hrs.to(self.device)
-			hrs_out = self._generate_output(lrs, hrs)
+			coords = coords.to(self.device)
+			hrs_out = self._generate_output(lrs, hrs, coords)
 			recon_loss = self.criterion(hrs_out, hrs)
 			return recon_loss, {}
 
 		self._train_loop(start, epochs, step_fn)
 
-	def _generate_output(self, lrs, hrs):
-		grid = self._create_query_grid(lrs.shape[0], hrs.shape[2], hrs.shape[3])
+	def val(self, epoch):
+		def step_fn(batch, step):
+			lrs, hrs, coords = batch
+			lrs = lrs.to(self.device)
+			hrs = hrs.to(self.device)
+			coords = coords.to(self.device)
+
+			with torch.no_grad():
+				out = self._generate_output(lrs, hrs, coords)
+				out = out.clamp(0, 1)
+
+			return self._display(lrs, hrs, out, suffix=f"{epoch + 1}", save_img=(step == 0))
+
+		self.model.eval()
+		self._val_loop(epoch, step_fn)
+		self.model.train()
+
+	def _generate_output(self, lrs, hrs, grid):
 		preds = self.model(lrs, grid)
 		return preds.transpose(1, 2).reshape_as(hrs)
 

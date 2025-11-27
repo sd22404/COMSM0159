@@ -11,7 +11,7 @@ from multiprocessing import cpu_count
 
 from models.old.diffusion import Denoiser, Diffusion
 from models.diffusion import SR3UNet, Diffuser
-from utils.dataset import DIV2K_X8
+from utils.dataset import PairDataset
 from utils.trainers import DiffusionTrainer
 
 def parse_args():
@@ -41,13 +41,13 @@ def main(args):
 	ssim = SSIM(data_range=1.0).to(device)
 	lpips = lp.LPIPS().to(device)
 
-	train_dataset = DIV2K_X8(
+	train_dataset = PairDataset(
 		hr_root="dataset/DIV2K_train_HR",
 		lr_root="dataset/DIV2K_train_LR_x8",
 		hr_transform=hr_crop,
 		lr_transform=lr_crop
 	)
-	val_dataset = DIV2K_X8(
+	val_dataset = PairDataset(
 		hr_root="dataset/DIV2K_valid_HR",
 		lr_root="dataset/DIV2K_valid_LR_x8",
 		hr_transform=hr_crop,
