@@ -2,14 +2,16 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms as T
-from torchmetrics.image import PeakSignalNoiseRatio as PSNR, StructuralSimilarityIndexMeasure as SSIM
-import lpips as lp
+from torchmetrics.image import PeakSignalNoiseRatio as PSNR, StructuralSimilarityIndexMeasure as SSIM, LearnedPerceptualImagePatchSimilarity as LPIPS
 
 from multiprocessing import cpu_count
 
 from models.dip import UNet, skip
-from utils.dataset import PairDataset, DIPDataset
+from utils.datasets import PairDataset, DIPDataset
 from utils.trainers import DIPTrainer
+
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.enabled = True
 
 def parse_args():
 	parser = argparse.ArgumentParser()
@@ -31,7 +33,7 @@ def main(args):
 	# metrics
 	psnr = PSNR(data_range=1.0).to(device)
 	ssim = SSIM(data_range=1.0).to(device)
-	lpips = lp.LPIPS().to(device)
+	lpips = LPIPS().to(device)
 
 	train_dataset = DIPDataset(
 		hr_root="dataset/DIV2K_train_HR",

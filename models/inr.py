@@ -57,9 +57,9 @@ class LIIF(nn.Module):
 			nn.Conv2d(feat_dim, feat_dim, 3, padding=1)
 		)
 
-		in_dim = feat_dim + 2
+		in_dim = 9 * feat_dim + 2 #+ 2
 
-		self.mlp = nn.Sequential(
+		self.siren = nn.Sequential(
 			SineLayer(in_dim, mlp_dim, is_first=True),
 			SineLayer(mlp_dim, mlp_dim),
 			SineLayer(mlp_dim, mlp_dim),
@@ -67,27 +67,91 @@ class LIIF(nn.Module):
 			nn.Sigmoid()
 		)
 
-	def forward(self, lrs, coords):
+	def forward(self, lrs, coords, cells):
 		B, N, _ = coords.shape
 		
 		feats = self.encoder(lrs) # (B, C, H, W)
+		B, C, H, W = feats.shape
 
-		# convert to [-1, 1]
-		grid = coords.view(B, N, 1, 2) * 2 - 1
+		# unfold 3x3 patches for each pixel
+		feats = F.unfold(feats, 3, padding=1).view(B, C * 9, H, W)
 		
-		# (B, C, H, W) -> (B, C, N, 1)
-		samples = F.grid_sample(
-			feats, 
-			grid,
-			mode='bicubic', 
-			padding_mode='border'
-		)
-		samples = samples.squeeze(-1).permute(0, 2, 1) # (B, N, C)
+		# corners of lr cell
+		dxs = [-1, 1]
+		dys = [-1, 1]
+		e = 1e-6
 
-		# TODO: IMPLEMENT RELATIVE COORDS
+		def make_coord(shape, ranges=None, flatten=True):
+			""" Make coordinates at grid centers.
+			"""
+			coord_seqs = []
+			for i, n in enumerate(shape):
+				if ranges is None:
+					v0, v1 = -1, 1
+				else:
+					v0, v1 = ranges[i]
+				r = (v1 - v0) / (2 * n)
+				seq = v0 + r + (2 * r) * torch.arange(n).float()
+				coord_seqs.append(seq)
+			ret = torch.stack(torch.meshgrid(*coord_seqs), dim=-1)
+			# (y, x) -> (x, y)
+			ret = torch.stack([ret[..., 1], ret[..., 0]], dim=-1)
+			if flatten:
+				ret = ret.view(-1, ret.shape[-1])
+			return ret
 
-		inp = torch.cat([samples, coords], dim=-1) # (B, N, C+2)
+		feat_coords = make_coord((H, W), flatten=False).to(coords.device).permute(2, 0, 1).unsqueeze(0).expand(B, -1, -1, -1)  # (B, 2, H, W)
 
-		rgb = self.mlp(inp) # (B, N, 3)
+		preds = []
+		areas = []
+
+		# calculate query from neighboring pixels
+		for dx in dxs:
+			for dy in dys:
+				coords_ = coords.clone()
+				coords_[..., 0] += dx / W + e
+				coords_[..., 1] += dy / H + e
+				coords_ = torch.clamp(coords_, -1.0 + e, 1.0 - e)
+				
+				# (B, C, H, W) -> (B, C, N, 1)
+				feat_sample = F.grid_sample(
+					feats, 
+					coords_.unsqueeze(1),
+					mode='bicubic',
+					align_corners=False
+				).squeeze(2).permute(0, 2, 1)
+
+				coord_sample = F.grid_sample(
+					feat_coords, 
+					coords_.unsqueeze(1),
+					mode='bicubic',
+					align_corners=False
+				).squeeze(2).permute(0, 2, 1)
+
+				rel_coord = coords - coord_sample
+				rel_coord[:, :, 0] *= H
+				rel_coord[:, :, 1] *= W
+
+				# append to feats
+				input = torch.cat([feat_sample, rel_coord], dim=-1)
+
+				# rel_cell = cells.clone()
+				# rel_cell[:, :, 0] *= feats.shape[-2]
+				# rel_cell[:, :, 1] *= feats.shape[-1]
+				# input = torch.cat([input, rel_cell], dim=-1)
+
+				pred = self.siren(input.view(B * N, -1)).view(B, N, -1) # (B, N, 3)
+				preds.append(pred)
+
+				area = torch.abs(rel_coord[:, :, 0] * rel_coord[:, :, 1])
+				areas.append(area + 1e-9)
+		
+		total_area = torch.stack(areas, dim=0).sum(dim=0)
+		t = areas[0]; areas[0] = areas[3]; areas[3] = t  # swap areas to match preds order
+		t = areas[1]; areas[1] = areas[2]; areas[2] = t
+
+		rgb = 0
+		for pred, area in zip(preds, areas):
+			rgb += pred * (area / total_area).unsqueeze(-1)
 		
 		return rgb
