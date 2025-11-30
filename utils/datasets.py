@@ -4,28 +4,23 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms as T
 
+import utils.utils as utils
+
 class PairDataset(Dataset):
-	def __init__(self, hr_root, lr_root, hr_transform=T.Lambda(lambda x: x), lr_transform=T.Lambda(lambda x: x), noise_std=0.0, downscale=1.0):
+	def __init__(self, hr_root, lr_root, hr_transform=T.Lambda(lambda x: x), lr_transform=T.Lambda(lambda x: x), crop_size=None, noise_std=0.0, downscale=8.0):
 		self.hr_root = hr_root
 		self.lr_root = lr_root
 		self.hr_files = sorted(os.listdir(hr_root))
 		self.lr_files = sorted(os.listdir(lr_root))
+		self.crop_size = crop_size
 		self.noise_std = noise_std
 		self.downscale = downscale
 
 		assert len(self.hr_files) == len(self.lr_files), \
 			"HR and LR folders must contain equal number of images."
 
-		self.hr_transform = T.Compose([
-			hr_transform,
-			T.ToTensor(),
-			# T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-		])
-		self.lr_transform = T.Compose([
-			lr_transform,
-			T.ToTensor(),
-			# T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-		])
+		self.hr_transform = hr_transform
+		self.lr_transform = lr_transform
 
 	def __len__(self):
 		return len(self.hr_files)
@@ -36,11 +31,20 @@ class PairDataset(Dataset):
 
 		hr = Image.open(hr_path).convert("RGB")
 		lr = Image.open(lr_path).convert("RGB")
-		
-		if self.downscale > 1:
+
+		if self.crop_size is not None:
+			i, j, h, w = T.RandomCrop.get_params(hr, output_size=(self.crop_size, self.crop_size))
+			hr = T.functional.crop(hr, i, j, h, w)
+			i //= self.downscale; j //= self.downscale; h //= self.downscale; w //= self.downscale
+			lr = T.functional.crop(lr, i, j, h, w)
+
+		hr = T.Compose([self.hr_transform, T.ToTensor()])(hr)
+		lr = T.Compose([self.lr_transform, T.ToTensor()])(lr)
+
+		if self.downscale != 8.0:
 			lr = T.functional.resize(
-				lr, 
-				[lr.shape[1] // self.downscale, lr.shape[2] // self.downscale], 
+				lr,
+				[int(lr.size(1) // (self.downscale / 8.0)), int(lr.size(2) // (self.downscale / 8.0))],
 				interpolation=T.InterpolationMode.BICUBIC
 			)
 
@@ -49,15 +53,12 @@ class PairDataset(Dataset):
 			lr = lr + noise
 			lr = torch.clamp(lr, 0, 1)
 
-		hr = self.hr_transform(hr)
-		lr = self.lr_transform(lr)
-
 		return lr, hr
 
 
 class DIPDataset(PairDataset):
-	def __init__(self, hr_root, lr_root, hr_transform=T.Lambda(lambda x: x), lr_transform=T.Lambda(lambda x: x), idx=0, noise_std=0.0, downscale=1.0):
-		super().__init__(hr_root, lr_root, hr_transform, lr_transform, noise_std, downscale)
+	def __init__(self, hr_root, lr_root, hr_transform=T.Lambda(lambda x: x), lr_transform=T.Lambda(lambda x: x), crop_size=None, noise_std=0.0, downscale=8.0, idx=0):
+		super().__init__(hr_root, lr_root, hr_transform, lr_transform, crop_size, noise_std, downscale)
 		self.idx = idx
 	
 	def __len__(self):
@@ -68,36 +69,21 @@ class DIPDataset(PairDataset):
 
 
 class INRDataset(PairDataset):
-	def __init__(self, hr_root, lr_root, hr_transform=T.Lambda(lambda x: x), lr_transform=T.Lambda(lambda x: x), sample_size=None, noise_std=0.0, downscale=1.0):
-		super().__init__(hr_root, lr_root, hr_transform, lr_transform, noise_std, downscale)
+	def __init__(self, hr_root, lr_root, hr_transform=T.Lambda(lambda x: x), lr_transform=T.Lambda(lambda x: x), crop_size=None, noise_std=0.0, downscale=8.0, sample_size=None):
+		super().__init__(hr_root, lr_root, hr_transform, lr_transform, crop_size, noise_std, downscale)
 		self.sample_size = sample_size
-	
-	def _make_grid(self, height, width):
-		y = torch.linspace(-1.0, 1.0, steps=height)
-		x = torch.linspace(-1.0, 1.0, steps=width)
-		grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
-		coords = torch.stack((grid_x, grid_y), dim=-1)
-		coords = coords.view(height * width, 2)
-
-		if self.sample_size is not None and len(coords) > self.sample_size:
-			indices = torch.randperm(len(coords))[:self.sample_size]
-			coords = coords[indices]
-
-		return coords
-
-	def _make_cells(self, coords, height, width):
-		cells = torch.ones_like(coords)
-		cells[:, 0] *= 2 / height
-		cells[:, 1] *= 2 / width
-		
-		if self.sample_size is not None and len(cells) > self.sample_size:
-			indices = torch.randperm(len(cells))[:self.sample_size]
-			cells = cells[indices]
-		
-		return cells
 	
 	def __getitem__(self, idx):
 		lr, hr = super().__getitem__(idx)
-		coords = self._make_grid(hr.shape[1], hr.shape[2])
-		cells = self._make_cells(coords, hr.shape[1], hr.shape[2])
-		return lr, hr, coords, cells
+		H, W = hr.shape[1], hr.shape[2]
+		coords = utils.make_grid(H, W).view(-1, 2)
+		cells = utils.make_cells(coords, H, W)
+		hr_pix = hr.view(3, -1).permute(1, 0)
+
+		if self.sample_size is not None and len(coords) > self.sample_size:
+			indices = torch.randperm(len(coords))[:self.sample_size]
+			cells = cells[indices]
+			coords = coords[indices]
+			hr_pix = hr_pix[indices]
+
+		return lr, hr_pix, coords, cells

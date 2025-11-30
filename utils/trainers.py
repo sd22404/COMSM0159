@@ -1,3 +1,5 @@
+import json
+import math
 from time import time
 import os
 import torch
@@ -37,7 +39,7 @@ class Trainer:
 		self.lpips = lpips
 		self.amp = use_amp
 		self.scaler = torch.amp.GradScaler(enabled=(self.device_type == "cuda" and use_grad_scaler))
-		self.best_loss = float("inf")
+		self.best_metric = float("inf")
 		self.best_state = None
 		self.checkpoint_prefix = checkpoint_prefix or self.model.__class__.__name__
 		self.visual_dir = "results"
@@ -53,23 +55,28 @@ class Trainer:
 		)
 
 	def _checkpoint_path(self, suffix):
+		os.makedirs("tmp/checkpoints", exist_ok=True) # for atomic save
 		os.makedirs("checkpoints", exist_ok=True)
 		return os.path.join("checkpoints", f"{self.checkpoint_prefix}_{suffix}.pth")
 
-	def _save_state(self, epoch, loss, save=True):
+	def _save_state(self, epoch, metric, save=True):
 		state = {
 			"model": self.model.state_dict(),
 			"optimizer": self.optimizer.state_dict(),
 			"epoch": epoch,
-			"loss": loss,
+			"metric": metric,
 		}
 		if save:
-			state_last = {k: v for k, v in state.items()}
-			torch.save(state_last, self._checkpoint_path("last"))
-			if loss < self.best_loss:
-				self.best_loss = loss
+			# only save best model
+
+			# state_last = {k: v for k, v in state.items()}
+			# torch.save(state_last, self._checkpoint_path("last"))
+			if metric > self.best_metric:
+				self.best_metric = metric
 				state_best = {k: v for k, v in state.items()}
-				torch.save(state_best, self._checkpoint_path("best"))
+				tmp_path = os.path.join("tmp", self._checkpoint_path("best"))
+				torch.save(state_best, tmp_path)
+				os.rename(tmp_path, self._checkpoint_path("best"))
 				self.best_state = state_best
 
 	def _step_scheduler(self):
@@ -104,12 +111,12 @@ class Trainer:
 			avg_loss = total_loss / (step_count + 1)
 			avg_metrics = {key: value / (step_count + 1) for key, value in total_metrics.items()}
 			tT = time() - t0
-			print(f"Epoch [{epoch + 1}/{epochs}] - Loss: {avg_loss:.6f}, Time: {tT:.3f} seconds" + "".join(f", {key.upper()}: {value:.3f}" for key, value in avg_metrics.items() + "                         "))
+			print(f"Epoch [{epoch + 1}/{epochs}] - Loss: {avg_loss:.6f}, Time: {tT:.3f} seconds" + "".join(f", {key.upper()}: {value:.3f}" for key, value in avg_metrics.items()) + "                         ")
 
 			self._step_scheduler()
 			
-			save = (epoch + 1) % self.save_interval == 0 or (epoch + 1) == epochs
-			self._save_state(epoch, avg_loss, save=save)
+			# save = (epoch + 1) % self.save_interval == 0
+			# self._save_state(epoch, -avg_loss, save=save)
 
 			if (epoch + 1) % self.val_interval == 0:
 				self.val(epoch)
@@ -124,18 +131,39 @@ class Trainer:
 		bar_len = 50
 		print(f"\nStarting validation...")
 
-		print("-" * bar_len, end=f" {0:2.0f}%\r", flush=True)
+		os.makedirs(self.visual_dir, exist_ok=True)
+		fname = os.path.join(self.visual_dir, f"{self.checkpoint_prefix}_metrics.json")
+		with open(fname, "w") as f:
+			f.write("{") # open json obj
+
+		# print("-" * bar_len, end=f" {0:2.0f}%\r", flush=True)
 		for step_count, batch in enumerate(self.val_loader):
 			metrics = step_fn(batch, step_count)
 
-			progress = bar_len * (step_count + 1) // len(self.val_loader)
-			print("█" * progress + "-" * (bar_len - progress), end=f" {progress * 100 / bar_len:2.0f}%\r", flush=True)
+			# progress = bar_len * (step_count + 1) // len(self.val_loader)
+			# print("█" * progress + "-" * (bar_len - progress), end=f" {progress * 100 / bar_len:2.0f}%\r", flush=True)
+			print(f"Metrics for image {step_count + 1}/{len(self.val_loader)} -" + "".join(f" {k}: {v:.3f}" for k, v in metrics.items()))
 			
 			for k, v in metrics.items():
 				total_metrics[k] = total_metrics.get(k, 0) + v
 
-		avg_metrics = {k: v / (step_count + 1) for k, v in total_metrics.items()}
-		print("\nMetrics -" + "".join(f" {k}: {v:.3f} " for k, v in avg_metrics.items()))
+			with open(fname, "a") as f:
+				if (step_count > 0):
+					f.write(",")
+				f.write(f"\n    \"{step_count + 1}\": ")
+				json.dump(metrics, f, ensure_ascii=False)
+
+			# break # for visualisation while training
+
+		avg_metrics = {k: v / (step_count + 1) for k, v in total_metrics.items()}		
+
+		# save on PSNR
+		self._save_state(step_count, avg_metrics["PSNR"], save=True)
+
+		with open(fname, "a") as f:
+			f.write("\n}\n") # close json
+
+		print("\nAverage Metrics -" + "".join(f" {k}: {v:.3f}" for k, v in avg_metrics.items()))
 		
 		torch.cuda.empty_cache()
 
@@ -149,13 +177,13 @@ class Trainer:
 				out = self._generate_output(lrs, hrs)
 				out = out.clamp(0, 1)
 
-			return self._display(lrs, hrs, out, suffix=f"{epoch + 1}" if epoch is not None else None, save_img=(step == 0))
+			return self._display(lrs, hrs, out, suffix=f"{epoch + 1}_{step + 1}" if epoch is not None else f"final_{step + 1}")
 
 		self.model.eval()
 		self._val_loop(step_fn)
 		self.model.train()
 
-	def _display(self, lrs, hrs, out, suffix="test", save_img=True):
+	def _display(self, lrs, hrs, out, suffix="final", save_img=True):
 		psnr_val = self.psnr(out, hrs).item()
 		ssim_val = self.ssim(out, hrs).item()
 		lpips_val = self.lpips(out, hrs).mean().item()
@@ -165,16 +193,16 @@ class Trainer:
 			lr_cpu = lrs.detach().cpu()
 			hr_cpu = hrs.detach().cpu()
 
-			batch_size = out_cpu.shape[0]
-			fig, axes = plt.subplots(3, batch_size, figsize=(max(batch_size * 6, 12), 18), squeeze=False)
+			B, C, H, W = out_cpu.shape
+			fig, axes = plt.subplots(B, 3, figsize=(3 * (W / 100) + 1e-6, B * (H / 100)), squeeze=False)
 			fig.subplots_adjust(left=0, right=1, top=1, bottom=0, hspace=0, wspace=0)
 			
-			for idx in range(batch_size):
-				axes[0, idx].imshow(lr_cpu[idx].permute(1, 2, 0).float())
-				axes[1, idx].imshow(out_cpu[idx].permute(1, 2, 0).float())
-				axes[2, idx].imshow(hr_cpu[idx].permute(1, 2, 0).float())
-			for row in range(3):
-				for col in range(batch_size):
+			for idx in range(B):
+				axes[idx, 0].imshow(lr_cpu[idx].permute(1, 2, 0).float())
+				axes[idx, 1].imshow(out_cpu[idx].permute(1, 2, 0).float())
+				axes[idx, 2].imshow(hr_cpu[idx].permute(1, 2, 0).float())
+			for col in range(3):
+				for row in range(B):
 					axes[row, col].axis("off")
 
 			os.makedirs(self.visual_dir, exist_ok=True)
@@ -208,7 +236,6 @@ class INRTrainer(Trainer):
 		val_interval=1,
 		save_interval=1,
 		checkpoint_prefix=None,
-		sample_size=None,
 	):
 		super().__init__(
 			model=model,
@@ -230,18 +257,17 @@ class INRTrainer(Trainer):
 
 		self.visual_dir = "results/inr"
 		self.mid_title = "INR Output"
-		self.sample_size = sample_size
 
 	def train(self, start, epochs):
 		def step_fn(batch):
-			lrs, hrs, coords, cells = batch
+			lrs, hrs_pix, coords, cells = batch
 			lrs = lrs.to(self.device)
-			hrs = hrs.to(self.device)
+			hrs_pix = hrs_pix.to(self.device)
 			coords = coords.to(self.device)
 			cells = cells.to(self.device)
 
-			hrs_out = self._generate_output(lrs, hrs, coords, cells)
-			loss = self.criterion(hrs_out, hrs)
+			hrs_out = self._generate_output(lrs, coords, cells)
+			loss = self.criterion(hrs_out.flatten(0, 1), hrs_pix.flatten(0, 1))
 			
 			return loss, {}
 
@@ -249,35 +275,47 @@ class INRTrainer(Trainer):
 
 	def val(self, epoch=None):
 		def step_fn(batch, step):
-			lrs, hrs, coords, cells = batch
+			lrs, hrs_pix, coords, cells = batch
 			lrs = lrs.to(self.device)
-			hrs = hrs.to(self.device)
+			hrs_pix = hrs_pix.to(self.device)
 			coords = coords.to(self.device)
 			cells = cells.to(self.device)
 
-			with torch.no_grad():
-				out = self._generate_output(lrs, hrs, coords, cells)
-				out = out.clamp(0, 1)
+			B, N, _ = coords.shape
 
-			return self._display(lrs, hrs, out, suffix=f"{epoch + 1}" if epoch is not None else None, save_img=(step == 0))
+			# Recover H and W from cells info
+			H = int(round(2 / cells[0, 0, 0].item()))
+			W = int(round(2 / cells[0, 0, 1].item()))
+			assert H * W == N, "Mismatch between H*W and N"
+
+			hrs = hrs_pix.permute(0, 2, 1).view(B, 3, H, W)
+			
+			with torch.no_grad():
+				out = self._generate_output(lrs, coords, cells)
+				out = out.permute(0, 2, 1).view(B, 3, H, W).clamp(0, 1)
+
+			return self._display(lrs, hrs, out, suffix=f"{epoch + 1}_{step + 1}" if epoch is not None else f"final_{step + 1}")
 
 		self.model.eval()
 		self._val_loop(step_fn)
 		self.model.train()
 
-	def _generate_output(self, lrs, hrs, grid, cells):
+	def _generate_output(self, lrs, grid, cells):
 		# process grid in chunks (too big for memory)
 		B, N, _ = grid.shape
-		chunk_size = N // 9
-		preds = []
+		chunk_size = N // 16
+		if chunk_size < 1:
+			chunk_size = N
 		
+		preds = []
 		for i in range(0, N, chunk_size):
 			chunk_grid = grid[:, i:i+chunk_size, :]
-			chunk_pred = self.model(lrs, chunk_grid, cells[:, i:i+chunk_size, :])
+			chunk_cells = cells[:, i:i+chunk_size, :]
+			chunk_pred = self.model(lrs, chunk_grid, chunk_cells)
 			preds.append(chunk_pred)
 			
 		preds = torch.cat(preds, dim=1)
-		return preds.transpose(1, 2).reshape_as(hrs)
+		return preds
 
 class DIPTrainer(Trainer):
 	def __init__(
@@ -321,18 +359,16 @@ class DIPTrainer(Trainer):
 
 	def train(self, start, epochs):
 		def step_fn(batch):
-			lrs, hrs = batch
-			lrs = lrs.to(self.device)
-			hrs = hrs.to(self.device)
+			lrs, _ = batch
 			hrs_out = self._generate_output()
 			lrs_out = F.interpolate(hrs_out, size=lrs.shape[-2:], mode="bicubic")
-			loss = self.criterion(lrs_out, lrs)
+			loss = self.criterion(lrs_out, lrs.to(self.device))
 
 			return loss, {}
 
 		self._train_loop(0, epochs, step_fn)
 
-	def _generate_output(self):
+	def _generate_output(self, lrs=None, hrs=None):
 		return self.model()
 
 
@@ -391,5 +427,5 @@ class DiffusionTrainer(Trainer):
 			self.diff.load_state_dict(self.best_state["model"])
 			print(f"Loaded best model from epoch {self.best_state['epoch'] + 1} with loss {self.best_state['loss']:.6f}")
 
-	def _generate_output(self, lrs):
+	def _generate_output(self, lrs, hrs=None):
 		return self.diff.sample(lrs.shape[0], lr_up=F.interpolate(lrs, scale_factor=8, mode="bicubic"))

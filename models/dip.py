@@ -189,36 +189,60 @@ def skip(num_input_channels=3, num_output_channels=3,
 
 
 class UNet(nn.Module):
-	def __init__(self, height, width, out_channels=3, base_channels=32, z_channels=32, z_sigma=0.05):
+	def __init__(self, height, width, out_channels=3, base_channels=128, z_channels=32, skip_channels=4, z_sigma=0.05):
 		super(UNet, self).__init__()
 		self.out_h = height
 		self.out_w = width
 		self.out_c = out_channels
 		self.bc = base_channels
 		self.zc = z_channels
+		self.sc = skip_channels
 		self.std = z_sigma
 
-		# ensure divisible by 16 to fit architecture
-		pad_h = math.ceil(height / 16) * 16
-		pad_w = math.ceil(width / 16) * 16
+		# ensure divisible by 32 to fit architecture
+		pad_h = math.ceil(height / 32) * 32
+		pad_w = math.ceil(width / 32) * 32
 		
 		self.register_buffer('z', torch.randn((1, self.zc, pad_h, pad_w)) * 0.1)
 
 		print(f"UNet initialized with input shape: ({self.zc}, {self.out_h}, {self.out_w}) -> Padded: ({pad_h}, {pad_w})")
 		
-		self.input = unet_conv(self.zc, self.bc)
+		self.skip1 = skip_block(self.zc, self.sc)
+		self.down1 = down_block(self.zc, self.bc)
 
-		self.down1 = down_conv(self.bc, self.bc * 2)
-		self.down2 = down_conv(self.bc * 2, self.bc * 4)
-		self.down3 = down_conv(self.bc * 4, self.bc * 8)
-		self.down4 = down_conv(self.bc * 8, self.bc * 16)
+		self.skip2 = skip_block(self.bc, self.sc)
+		# self.down2 = down_block(self.bc, self.bc * 2)
+		self.down2 = down_block(self.bc, self.bc)
 
-		self.up4 = up_conv(self.bc * 16, self.bc * 8)
-		self.up3 = up_conv(self.bc * 8, self.bc * 4)
-		self.up2 = up_conv(self.bc * 4, self.bc * 2)
-		self.up1 = up_conv(self.bc * 2, self.bc)
+		# self.skip3 = skip_block(self.bc * 2, self.sc)
+		# self.down3 = down_block(self.bc * 2, self.bc * 4)
+		self.skip3 = skip_block(self.bc, self.sc)
+		self.down3 = down_block(self.bc, self.bc)
 
-		self.output = out_conv(self.bc, self.out_c)
+		# self.skip4 = skip_block(self.bc * 4, self.sc)
+		# self.down4 = down_block(self.bc * 4, self.bc * 8)
+		self.skip4 = skip_block(self.bc, self.sc)
+		self.down4 = down_block(self.bc, self.bc)
+
+		# self.skip5 = skip_block(self.bc * 8, self.sc)
+		# self.down5 = down_block(self.bc * 8, self.bc * 16)
+		self.skip5 = skip_block(self.bc, self.sc)
+		self.down5 = down_block(self.bc, self.bc)
+		
+		# self.up5 = up_block(self.bc * 16, self.sc, self.bc * 8)
+		# self.up4 = up_block(self.bc * 8, self.sc, self.bc * 4)
+		# self.up3 = up_block(self.bc * 4, self.sc, self.bc * 2)
+		# self.up2 = up_block(self.bc * 2, self.sc, self.bc)
+		self.up5 = up_block(self.bc, self.sc, self.bc)
+		self.up4 = up_block(self.bc, self.sc, self.bc)
+		self.up3 = up_block(self.bc, self.sc, self.bc)
+		self.up2 = up_block(self.bc, self.sc, self.bc)
+		self.up1 = up_block(self.bc, self.sc, self.bc)
+
+		self.output = nn.Sequential(
+			nn.Conv2d(self.bc, self.out_c, 1),
+			nn.Sigmoid()
+		)
 
 	def get_z(self, sigma=0.0):
 		if sigma <= 0:
@@ -228,18 +252,22 @@ class UNet(nn.Module):
 	def forward(self, z=None, t=None, c=None):
 		z = self.get_z(self.std) if z is None else z
 		z = torch.cat((c, z), dim=1) if c is not None else z
-		
-		x = self.input(z)
 
-		s1 = x
-		x = self.down1(x)
-		s2 = x
+		s1 = self.skip1(z)
+		x = self.down1(z)
+
+		s2 = self.skip2(x)
 		x = self.down2(x)
-		s3 = x
+		s3 = self.skip3(x)
 		x = self.down3(x)
-		s4 = x
+
+		s4 = self.skip4(x)
 		x = self.down4(x)
 
+		s5 = self.skip5(x)
+		x = self.down5(x)
+
+		x = self.up5(x, s5)
 		x = self.up4(x, s4)
 		x = self.up3(x, s3)
 		x = self.up2(x, s2)
@@ -251,64 +279,48 @@ class UNet(nn.Module):
 		x = x[:, :, :self.out_h, :self.out_w]
 		return x
 
-
-class unet_conv(nn.Module):
-	def __init__(self, in_c, out_c, kernel_size=3, stride=1, padding=1):
-		super(unet_conv, self).__init__()
+class skip_block(nn.Module):
+	def __init__(self, c_in, c_out):
+		super(skip_block, self).__init__()
 		self.conv = nn.Sequential(
-			nn.Conv2d(in_c, out_c, kernel_size, stride, padding, padding_mode='reflect'),
-		)
-
-	def forward(self, x):
-		return self.conv(x)
-
-class double_conv(nn.Module):
-	def __init__(self, c_in, c_out, kernel_size=3, stride=1, padding=1):
-		super(double_conv, self).__init__()
-		self.conv = nn.Sequential(
-			conv(c_in, c_out, kernel_size, stride, padding),
-			nn.LeakyReLU(0.2, inplace=True),
-			conv(c_out, c_out, kernel_size, stride, padding),
+			nn.Conv2d(c_in, c_out, kernel_size=1, stride=1, padding=0),
+			nn.BatchNorm2d(c_out),
 			nn.LeakyReLU(0.2, inplace=True)
 		)
-	
+
 	def forward(self, x):
 		return self.conv(x)
 
-class down_conv(nn.Module):
+class down_block(nn.Module):
 	def __init__(self, c_in, c_out, kernel_size=3, stride=1, padding=1):
-		super(down_conv, self).__init__()
+		super(down_block, self).__init__()
 		self.down = nn.Sequential(
-			# nn.MaxPool2d(2, 2),
-			conv(c_in, c_out, kernel_size=2, stride=2, padding=0),
-			double_conv(c_out, c_out, kernel_size, stride, padding)
+			nn.Conv2d(c_in, c_out, kernel_size, stride=2, padding=padding),
+			nn.BatchNorm2d(c_out),
+			nn.LeakyReLU(0.2, inplace=True),
+			nn.Conv2d(c_out, c_out, kernel_size, stride, padding=padding),
+			nn.BatchNorm2d(c_out),
+			nn.LeakyReLU(0.2, inplace=True)
 		)
 
 	def forward(self, x):
 		return self.down(x)
-	
-class up_conv(nn.Module):
-	def __init__(self, c_in, c_out):
-		super(up_conv, self).__init__()
-		# self.up = nn.ConvTranspose2d(c_in, c_out, kernel_size=2, stride=2)
-		self.up = nn.Sequential(
-			nn.Upsample(scale_factor=2, mode='bilinear'),
-			conv(c_in, c_out, kernel_size=1, stride=1, padding=0)
+
+class up_block(nn.Module):
+	def __init__(self, c_in, c_skip, c_out, kernel_size=3, padding=1):
+		super(up_block, self).__init__()
+		self.up = nn.Upsample(scale_factor=2, mode='bilinear')
+		self.conv = nn.Sequential(
+			nn.BatchNorm2d(c_in + c_skip),
+			nn.Conv2d(c_in + c_skip, c_out, kernel_size, stride=1, padding=padding),
+			nn.BatchNorm2d(c_out),
+			nn.LeakyReLU(0.2, inplace=True),
+			nn.Conv2d(c_out, c_out, kernel_size=1, stride=1, padding=0),
+			nn.BatchNorm2d(c_out),
+			nn.LeakyReLU(0.2, inplace=True)
 		)
-		self.conv = double_conv(c_in, c_out)
 
 	def forward(self, x, skip):
 		x = self.up(x)
 		x = torch.cat((x, skip), dim=1)
-		return self.conv(x)
-
-class out_conv(nn.Module):
-	def __init__(self, in_c, out_c):
-		super(out_conv, self).__init__()
-		self.conv = nn.Sequential(
-			conv(in_c, out_c, kernel_size=1, stride=1, padding=0),
-			nn.Sigmoid()
-		)
-
-	def forward(self, x):
 		return self.conv(x)

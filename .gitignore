@@ -211,3 +211,4 @@ dataset/*
 logs/*
 results/*
 checkpoints/*
+tmp/*
