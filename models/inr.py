@@ -26,25 +26,20 @@ class SineLayer(nn.Module):
 	def forward(self, input):
 		return torch.sin(self.omega_0 * self.linear(input))
 
-# class ResBlock(nn.Module):
-# 	def __init__(self, channels):
-# 		super().__init__()
-# 		self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
-# 		# self.bn1 = nn.BatchNorm2d(channels)
-# 		self.relu = nn.ReLU(inplace=True)
-# 		self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
-# 		# self.bn2 = nn.BatchNorm2d(channels)
+class ResBlock(nn.Module):
+	def __init__(self, channels):
+		super().__init__()
+		self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+		self.relu = nn.ReLU(inplace=True)
+		self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
 
-# 	def forward(self, x):
-# 		res = x
-# 		out = self.conv1(x)
-# 		# out = self.bn1(out)
-# 		out = self.relu(out)
-# 		out = self.conv2(out)
-# 		# out = self.bn2(out)
-# 		out += res
-# 		# out = self.relu(out)
-# 		return out
+	def forward(self, x):
+		res = x
+		out = self.conv1(x)
+		out = self.relu(out)
+		out = self.conv2(out)
+		out = out * 0.1 + res
+		return out
 
 class RDB_Conv(nn.Module):
 	def __init__(self, in_c, out_c, kernel_size=3):
@@ -116,11 +111,30 @@ class RDN(nn.Module):
 		return x
 
 
+class EDSR(nn.Module):
+	def __init__(self, in_channels=3, feat_dim=64, num_res_blocks=16):
+		super().__init__()
+
+		self.input = nn.Conv2d(in_channels, feat_dim, 3, padding=1)
+		self.res_blocks = nn.Sequential(
+			*[ResBlock(feat_dim) for _ in range(num_res_blocks)]
+		)
+		self.output = nn.Conv2d(feat_dim, feat_dim, 3, padding=1)
+
+	def forward(self, x):
+		x = self.input(x)
+		res = x
+		x = self.res_blocks(x)
+		x = self.output(x)
+		out = x + res
+		return out
+
+
 class LIIF(nn.Module):
 	def __init__(self, in_channels=3, feat_dim=64, mlp_dim=256):
 		super().__init__()
 
-		self.encoder = RDN(in_channels=in_channels, base_growth=feat_dim)
+		self.encoder = EDSR(in_channels=in_channels, feat_dim=feat_dim, num_res_blocks=8)
 
 		in_dim = 9 * feat_dim + 2 + 2 # 3x3 patch features + relative coord + cell size
 
@@ -144,64 +158,79 @@ class LIIF(nn.Module):
 
 		feat_coords = utils.make_grid(H, W).to(coords.device).permute(2, 0, 1).unsqueeze(0).expand(B, -1, -1, -1)  # (B, 2, H, W)
 
-		# corners of lr cell
-		corner_offsets = [
-			(-1, -1), # top left
-			( 1, -1), # top right
-			(-1,  1), # bottom left
-			( 1,  1), # bottom right
-		]
+		# # corners of lr cell
+		# corner_offsets = [
+		# 	( 1,  1), # bottom right
+		# 	( 1, -1), # top right
+		# 	(-1,  1), # bottom left
+		# 	(-1, -1), # top left
+		# ]
 		
+		dxs = [-1, 1]
+		dys = [-1, 1]
 		e = 1e-6
-		inputs = []
+
+		# inputs = []
 		areas = []
+		preds = []
 
 		# calculate query from neighboring pixels
-		for dx, dy in corner_offsets:
-			coords_ = coords.clone()
-			coords_[..., 0] += dx / H + e
-			coords_[..., 1] += dy / W + e
-			coords_ = torch.clamp(coords_, -1.0 + e, 1.0 - e)
-			
-			# (B, C, H, W) -> (B, C, N, 1)
-			feat_sample = F.grid_sample(
-				feats, 
-				coords_.flip(-1).unsqueeze(1), # flip (y, x) to (x, y)
-				mode='nearest',
-				align_corners=False
-			).squeeze(2).permute(0, 2, 1)
 
-			coord_sample = F.grid_sample(
-				feat_coords, 
-				coords_.flip(-1).unsqueeze(1), # flip (y, x) to (x, y)
-				mode='nearest',
-				align_corners=False
-			).squeeze(2).permute(0, 2, 1)
+		# for dx, dy in corner_offsets:
+		for dx in dxs:
+			for dy in dys:
+				coords_ = coords.clone()
+				coords_[..., 0] += dy / H + e # (y, x)
+				coords_[..., 1] += dx / W + e
+				coords_ = torch.clamp(coords_, -1.0 + e, 1.0 - e)
+				
+				# (B, C, H, W) -> (B, C, N, 1)
+				feat_sample = F.grid_sample(
+					feats, 
+					coords_.flip(-1).unsqueeze(1), # flip (y, x) to (x, y)
+					mode='nearest',
+					align_corners=False
+				).squeeze(2).permute(0, 2, 1)
 
-			rel_coord = coords - coord_sample
-			rel_coord[:, :, 0] *= H
-			rel_coord[:, :, 1] *= W
+				coord_sample = F.grid_sample(
+					feat_coords, 
+					coords_.flip(-1).unsqueeze(1), # flip (y, x) to (x, y)
+					mode='nearest',
+					align_corners=False
+				).squeeze(2).permute(0, 2, 1)
 
-			rel_cell = cells.clone()
-			rel_cell[:, :, 0] *= H
-			rel_cell[:, :, 1] *= W
+				rel_coord = coords - coord_sample
+				rel_coord[:, :, 0] *= H
+				rel_coord[:, :, 1] *= W
 
-			area = torch.abs(rel_coord[:, :, 0] * rel_coord[:, :, 1])
-			areas.append(area + 1e-9)
+				rel_cell = cells.clone()
+				rel_cell[:, :, 0] *= H
+				rel_cell[:, :, 1] *= W
 
-			input = torch.cat([feat_sample, rel_coord, rel_cell], dim=-1)
-			inputs.append(input)
+				area = torch.abs(rel_coord[:, :, 0] * rel_coord[:, :, 1])
+				areas.append(area + 1e-9)
+
+				input = torch.cat([feat_sample, rel_coord, rel_cell], dim=-1)
+
+				pred = self.siren(input.view(B * N, -1)).view(B, N, -1) # (B, N, 3)
+				preds.append(pred)
+
+				# inputs.append(input)
 		
-		# stack four corners' inputs
-		stack_input = torch.stack(inputs, dim=0) 
-		K, B, N, D = stack_input.shape # K = 4 corners
+		# # stack four corners' inputs
+		# stack_input = torch.stack(inputs, dim=0)
+		# K, B, N, D = stack_input.shape # K = 4 corners
 
-		pred = self.siren(stack_input.view(-1, D)).view(K, B, N, -1) # (K, B, N, 3)
+		# pred = self.siren(stack_input.view(-1, D)).view(K, B, N, -1) # (K, B, N, 3)
 		
 		total_area = torch.stack(areas, dim=0).sum(dim=0)
+		areas[0], areas[3] = areas[3], areas[0] # swap to match preds
+		areas[1], areas[2] = areas[2], areas[1]
 
 		rgb = 0
-		for k in range(K):
-			rgb += pred[k] * (areas[k] / total_area).unsqueeze(-1)
+		# for k in range(K):
+			# rgb += pred[k] * (areas[k] / total_area).unsqueeze(-1)
+		for pred, area in zip(preds, areas):
+			rgb += pred * (area / total_area).unsqueeze(-1)
 		
 		return rgb

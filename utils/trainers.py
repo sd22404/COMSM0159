@@ -1,5 +1,4 @@
 import json
-import math
 from time import time
 import os
 import torch
@@ -39,7 +38,7 @@ class Trainer:
 		self.lpips = lpips
 		self.amp = use_amp
 		self.scaler = torch.amp.GradScaler(enabled=(self.device_type == "cuda" and use_grad_scaler))
-		self.best_metric = float("inf")
+		self.best_metric = -float("inf")
 		self.best_state = None
 		self.checkpoint_prefix = checkpoint_prefix or self.model.__class__.__name__
 		self.visual_dir = "results"
@@ -123,7 +122,7 @@ class Trainer:
 
 		if self.best_state is not None:
 			self.model.load_state_dict(self.best_state["model"])
-			print(f"Loaded best model from epoch {self.best_state['epoch'] + 1} with loss {self.best_state['loss']:.6f}.")
+			print(f"Loaded best model from epoch {self.best_state['epoch'] + 1} with metric {self.best_state['metric']:.6f}.")
 
 	def _val_loop(self, step_fn):
 		total_metrics = {}
@@ -161,7 +160,11 @@ class Trainer:
 		self._save_state(step_count, avg_metrics["PSNR"], save=True)
 
 		with open(fname, "a") as f:
-			f.write("\n}\n") # close json
+				if (step_count > 0):
+					f.write(",")
+				f.write(f"\n    \"Average\": ")
+				json.dump(avg_metrics, f, ensure_ascii=False)
+				f.write("\n}\n") # close json obj
 
 		print("\nAverage Metrics -" + "".join(f" {k}: {v:.3f}" for k, v in avg_metrics.items()))
 		
@@ -370,62 +373,3 @@ class DIPTrainer(Trainer):
 
 	def _generate_output(self, lrs=None, hrs=None):
 		return self.model()
-
-
-class DiffusionTrainer(Trainer):
-	def __init__(
-		self,
-		diff,
-		criterion,
-		optimizer,
-		scheduler,
-		train_loader,
-		val_loader,
-		device,
-		psnr,
-		ssim,
-		lpips,
-		use_amp=False,
-		use_grad_scaler=False,
-		val_interval=2,
-		save_interval=2,
-		checkpoint_prefix=None,
-	):
-		super().__init__(
-			model=diff,
-			criterion=criterion,
-			optimizer=optimizer,
-			train_loader=train_loader,
-			val_loader=val_loader,
-			scheduler=scheduler,
-			device=device,
-			psnr=psnr,
-			ssim=ssim,
-			lpips=lpips,
-			use_amp=use_amp,
-			use_grad_scaler=use_grad_scaler,
-			val_interval=val_interval,
-			save_interval=save_interval,
-		)
-
-		self.diff = self.model
-		self.checkpoint_prefix = checkpoint_prefix or self.diff.model.__class__.__name__
-		self.visual_dir = "results/diffusion"
-		self.mid_title = "Diffusion Output"
-
-	def train(self, start, epochs):
-		def step_fn(batch):
-			lrs, hrs = batch
-			lrs = lrs.to(self.device)
-			hrs = hrs.to(self.device)
-			lrs_up = F.interpolate(lrs, scale_factor=8, mode="bicubic")
-			_, e, pred_e = self.diff(hrs, lrs_up)
-			return self.criterion(pred_e, e), {}
-
-		self._train_loop(start, epochs, step_fn)
-		if self.best_state is not None:
-			self.diff.load_state_dict(self.best_state["model"])
-			print(f"Loaded best model from epoch {self.best_state['epoch'] + 1} with loss {self.best_state['loss']:.6f}")
-
-	def _generate_output(self, lrs, hrs=None):
-		return self.diff.sample(lrs.shape[0], lr_up=F.interpolate(lrs, scale_factor=8, mode="bicubic"))

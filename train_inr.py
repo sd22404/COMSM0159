@@ -18,7 +18,7 @@ torch.backends.cudnn.enabled = True
 def parse_args():
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--learning-rate", "-lr", default=1e-4, type=float, help="Learning rate")
-	parser.add_argument("--batch-size", "-bs", default=16, type=int, help="Number of images within each mini-batch")
+	parser.add_argument("--batch-size", "-bs", default=8, type=int, help="Number of images within each mini-batch")
 	parser.add_argument("--epochs", "-e", default=600, type=int, help="Number of training epochs")
 	parser.add_argument("--load-checkpoint", "-c", default=None, type=Path, help="Load from checkpoint if available")
 	parser.add_argument("--checkpoint-dir", default="checkpoints", type=Path, help="Path to save checkpoint")
@@ -86,7 +86,7 @@ def main(args):
 		lpips=lpips,
 		use_amp=args.amp,
 		use_grad_scaler=args.grad_scaler,
-		val_interval=args.epochs // 10,
+		val_interval=args.epochs + 1,# // 10,
 		save_interval=args.epochs // 10,
 		checkpoint_prefix=args.checkpoint_prefix,
 	)
