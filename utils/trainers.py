@@ -113,9 +113,10 @@ class Trainer:
 			print(f"Epoch [{epoch + 1}/{epochs}] - Loss: {avg_loss:.6f}, Time: {tT:.3f} seconds" + "".join(f", {key.upper()}: {value:.3f}" for key, value in avg_metrics.items()) + "                         ")
 
 			self._step_scheduler()
-			
-			# save = (epoch + 1) % self.save_interval == 0
-			# self._save_state(epoch, -avg_loss, save=save)
+
+			# save on loss if not validating
+			save = (epoch + 1) % self.save_interval == 0
+			self._save_state(epoch, -avg_loss, save=save)
 
 			if (epoch + 1) % self.val_interval == 0:
 				self.val(epoch)
@@ -160,9 +161,7 @@ class Trainer:
 		self._save_state(step_count, avg_metrics["PSNR"], save=True)
 
 		with open(fname, "a") as f:
-				if (step_count > 0):
-					f.write(",")
-				f.write(f"\n    \"Average\": ")
+				f.write(f",\n    \"Average\": ")
 				json.dump(avg_metrics, f, ensure_ascii=False)
 				f.write("\n}\n") # close json obj
 
@@ -180,7 +179,7 @@ class Trainer:
 				out = self._generate_output(lrs, hrs)
 				out = out.clamp(0, 1)
 
-			return self._display(lrs, hrs, out, suffix=f"{epoch + 1}_{step + 1}" if epoch is not None else f"final_{step + 1}")
+			return self._display(lrs, hrs, out, suffix=f"{epoch + 1}_{step + 1}" if epoch is not None else f"final_{step + 1}", save_img=epoch is None) # save if final
 
 		self.model.eval()
 		self._val_loop(step_fn)
@@ -297,7 +296,7 @@ class INRTrainer(Trainer):
 				out = self._generate_output(lrs, coords, cells)
 				out = out.permute(0, 2, 1).view(B, 3, H, W).clamp(0, 1)
 
-			return self._display(lrs, hrs, out, suffix=f"{epoch + 1}_{step + 1}" if epoch is not None else f"final_{step + 1}")
+			return self._display(lrs, hrs, out, suffix=f"{epoch + 1}_{step + 1}" if epoch is not None else f"final_{step + 1}", save_img=epoch is None) # save if final
 
 		self.model.eval()
 		self._val_loop(step_fn)

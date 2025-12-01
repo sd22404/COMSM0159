@@ -70,13 +70,13 @@ class RDB(nn.Module):
 		return self.LFF(self.dense_layers(x)) * self.res_scale + x
 
 class RDN(nn.Module):
-	def __init__(self, in_channels=3, base_growth=64 // 2, kernel_size=3):
+	def __init__(self, in_channels=3, base_growth=64, kernel_size=3):
 		super(RDN, self).__init__()
 
 		# config
-		self.blocks = 20 // 4
-		convs = 6 // 2
-		growth = 64 // 2
+		self.blocks = 12 #20
+		convs = 4 #6
+		growth = 32 #64
 		self.res_scale = 0.1
 		
 		self.shallow1 = nn.Conv2d(in_channels, base_growth, kernel_size, padding=1)
@@ -134,9 +134,11 @@ class LIIF(nn.Module):
 	def __init__(self, in_channels=3, feat_dim=64, mlp_dim=256):
 		super().__init__()
 
-		self.encoder = EDSR(in_channels=in_channels, feat_dim=feat_dim, num_res_blocks=8)
+		# self.encoder = EDSR(in_channels=in_channels, feat_dim=feat_dim, num_res_blocks=8)
+		self.encoder = RDN(in_channels=in_channels, base_growth=(feat_dim // 2))
 
-		in_dim = 9 * feat_dim + 2 + 2 # 3x3 patch features + relative coord + cell size
+		in_dim = 9 * (feat_dim // 2) + 2 + 2
+		# in_dim = 9 * feat_dim + 2 + 2 # 3x3 patch features + relative coord + cell size
 
 		self.siren = nn.Sequential(
 			SineLayer(in_dim, mlp_dim, is_first=True),

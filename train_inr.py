@@ -86,7 +86,7 @@ def main(args):
 		lpips=lpips,
 		use_amp=args.amp,
 		use_grad_scaler=args.grad_scaler,
-		val_interval=args.epochs + 1,# // 10,
+		val_interval=args.epochs + 1, # don't val during train  # // 10,
 		save_interval=args.epochs // 10,
 		checkpoint_prefix=args.checkpoint_prefix,
 	)

@@ -17,7 +17,7 @@ torch.backends.cudnn.enabled = True
 def parse_args():
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--learning-rate", "-lr", default=1e-2, type=float, help="Learning rate")
-	parser.add_argument("--epochs", "-e", default=4000, type=int, help="Number of training epochs")
+	parser.add_argument("--epochs", "-e", default=2000, type=int, help="Number of training epochs")
 	parser.add_argument("--scheduler", action='store_true', help="Use learning rate scheduler")
 	parser.add_argument("--amp", default=True, help="Use automatic mixed precision")
 	parser.add_argument("--grad-scaler", default=True, help="Use gradient scaler for mixed precision training")
