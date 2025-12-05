@@ -7,7 +7,7 @@ from torchvision import transforms as T
 import utils.utils as utils
 
 class PairDataset(Dataset):
-	def __init__(self, hr_root, lr_root, hr_transform=T.Lambda(lambda x: x), lr_transform=T.Lambda(lambda x: x), crop_size=None, noise_std=0.0, downscale=8.0):
+	def __init__(self, hr_root, lr_root, hr_transform=T.Lambda(lambda x: x), lr_transform=T.Lambda(lambda x: x), crop_size=None, noise_std=0.0, downscale=8):
 		self.hr_root = hr_root
 		self.lr_root = lr_root
 		self.hr_files = sorted(os.listdir(hr_root))
@@ -32,21 +32,31 @@ class PairDataset(Dataset):
 		hr = Image.open(hr_path).convert("RGB")
 		lr = Image.open(lr_path).convert("RGB")
 
+		if self.downscale < 8:
+			h = max(1, hr.height // self.downscale)
+			w = max(1, hr.width // self.downscale)
+			lr = T.functional.resize(hr, (h, w), interpolation=T.InterpolationMode.BICUBIC)
+		elif self.downscale > 8:
+			h = max(1, lr.height * 8 // self.downscale)
+			w = max(1, lr.width * 8 // self.downscale)
+			lr = T.functional.resize(lr, (h, w), interpolation=T.InterpolationMode.BICUBIC)
+
 		if self.crop_size is not None:
-			i, j, h, w = T.RandomCrop.get_params(hr, output_size=(self.crop_size, self.crop_size))
-			hr = T.functional.crop(hr, i, j, h, w)
-			i //= self.downscale; j //= self.downscale; h //= self.downscale; w //= self.downscale
+			# aligned random crop
+			i, j, _, _ = T.RandomCrop.get_params(hr, output_size=(self.crop_size, self.crop_size))
+			i = (i // self.downscale) * self.downscale
+			j = (j // self.downscale) * self.downscale
+			i = min(i, hr.height - self.crop_size)
+			j = min(j, hr.width - self.crop_size)
+			hr = T.functional.crop(hr, i, j, self.crop_size, self.crop_size)
+			i //= self.downscale
+			j //= self.downscale
+			h = self.crop_size // self.downscale
+			w = self.crop_size // self.downscale
 			lr = T.functional.crop(lr, i, j, h, w)
 
 		hr = T.Compose([self.hr_transform, T.ToTensor()])(hr)
 		lr = T.Compose([self.lr_transform, T.ToTensor()])(lr)
-
-		if self.downscale != 8.0:
-			lr = T.functional.resize(
-				lr,
-				[int(lr.size(1) // (self.downscale / 8.0)), int(lr.size(2) // (self.downscale / 8.0))],
-				interpolation=T.InterpolationMode.BICUBIC
-			)
 
 		if self.noise_std > 0:
 			noise = torch.randn_like(lr) * self.noise_std
@@ -58,14 +68,26 @@ class PairDataset(Dataset):
 
 class DIPDataset(PairDataset):
 	def __init__(self, hr_root, lr_root, hr_transform=T.Lambda(lambda x: x), lr_transform=T.Lambda(lambda x: x), crop_size=None, noise_std=0.0, downscale=8.0, idx=0):
-		super().__init__(hr_root, lr_root, hr_transform, lr_transform, crop_size, noise_std, downscale)
+		super().__init__(hr_root, lr_root, hr_transform, lr_transform, crop_size, 0.0, downscale)
 		self.idx = idx
+		self.fixed_noise = None
+		self.fixed_noise_std = noise_std
+		# use the same noise at every stage for DIP
+		if self.fixed_noise_std > 0:
+			lr, _ = super().__getitem__(self.idx)
+			self.fixed_noise = torch.randn_like(lr) * self.fixed_noise_std
 	
 	def __len__(self):
 		return 1
 	
 	def __getitem__(self, idx):
-		return super().__getitem__(self.idx)
+		lr, hr = super().__getitem__(self.idx)
+
+		if self.fixed_noise is not None:
+			lr = lr + self.fixed_noise
+			lr = torch.clamp(lr, 0, 1)
+
+		return lr, hr
 
 
 class INRDataset(PairDataset):

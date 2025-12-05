@@ -42,7 +42,6 @@ class Trainer:
 		self.best_state = None
 		self.checkpoint_prefix = checkpoint_prefix or self.model.__class__.__name__
 		self.visual_dir = "results"
-		self.mid_title = "Model Output"
 		self.val_interval = val_interval
 		self.save_interval = save_interval
 
@@ -58,25 +57,26 @@ class Trainer:
 		os.makedirs("checkpoints", exist_ok=True)
 		return os.path.join("checkpoints", f"{self.checkpoint_prefix}_{suffix}.pth")
 
-	def _save_state(self, epoch, metric, save=True):
-		state = {
-			"model": self.model.state_dict(),
-			"optimizer": self.optimizer.state_dict(),
-			"epoch": epoch,
-			"metric": metric,
-		}
-		if save:
-			# only save best model
-
-			# state_last = {k: v for k, v in state.items()}
-			# torch.save(state_last, self._checkpoint_path("last"))
-			if metric > self.best_metric:
-				self.best_metric = metric
-				state_best = {k: v for k, v in state.items()}
-				tmp_path = os.path.join("tmp", self._checkpoint_path("best"))
-				torch.save(state_best, tmp_path)
-				os.rename(tmp_path, self._checkpoint_path("best"))
-				self.best_state = state_best
+	def _save_state(self, epoch, metric, save_last=True, state=None):
+		if state is None:
+			state = {
+				"model": self.model.state_dict(),
+				"optimizer": self.optimizer.state_dict(),
+				"epoch": epoch,
+				"metric": metric,
+			}
+		if save_last:
+			state_last = {k: v for k, v in state.items()}
+			tmp_path = os.path.join("tmp", self._checkpoint_path(f"{epoch + 1}"))
+			torch.save(state_last, tmp_path)
+			os.rename(tmp_path, self._checkpoint_path(f"{epoch + 1}"))
+		if metric > self.best_metric:
+			self.best_metric = metric
+			state_best = {k: v for k, v in state.items()}
+			tmp_path = os.path.join("tmp", self._checkpoint_path("best"))
+			torch.save(state_best, tmp_path)
+			os.rename(tmp_path, self._checkpoint_path("best"))
+			self.best_state = state_best
 
 	def _step_scheduler(self):
 		if self.scheduler is not None:
@@ -95,7 +95,7 @@ class Trainer:
 			for step_count, batch in enumerate(self.train_loader):
 				self.optimizer.zero_grad()
 				with self.autocast():
-					loss, metrics = step_fn(batch)
+					loss, metrics = step_fn(batch, epoch)
 
 				self.scaler.scale(loss).backward()
 				self.scaler.step(self.optimizer)
@@ -115,8 +115,8 @@ class Trainer:
 			self._step_scheduler()
 
 			# save on loss if not validating
-			save = (epoch + 1) % self.save_interval == 0
-			self._save_state(epoch, -avg_loss, save=save)
+			if (epoch + 1) % self.save_interval == 0:
+				self._save_state(epoch, -avg_loss, save_last=True)
 
 			if (epoch + 1) % self.val_interval == 0:
 				self.val(epoch)
@@ -125,15 +125,16 @@ class Trainer:
 			self.model.load_state_dict(self.best_state["model"])
 			print(f"Loaded best model from epoch {self.best_state['epoch'] + 1} with metric {self.best_state['metric']:.6f}.")
 
-	def _val_loop(self, step_fn):
+	def _val_loop(self, step_fn, epoch=None):
 		total_metrics = {}
 		step_count = 0
-		bar_len = 50
+		# bar_len = 50
 		print(f"\nStarting validation...")
 
-		os.makedirs(self.visual_dir, exist_ok=True)
-		fname = os.path.join(self.visual_dir, f"{self.checkpoint_prefix}_metrics.json")
-		with open(fname, "w") as f:
+		tmp_dir = os.path.join("tmp", self.visual_dir)
+		os.makedirs(tmp_dir, exist_ok=True) # save in tmp and then move
+		fpath = os.path.join(tmp_dir, f"{self.checkpoint_prefix}_{epoch + 1 if epoch is not None else 'final'}_{f"{self.img}_" if hasattr(self, 'img') else ''}metrics.json")
+		with open(fpath, "w") as f:
 			f.write("{") # open json obj
 
 		# print("-" * bar_len, end=f" {0:2.0f}%\r", flush=True)
@@ -142,12 +143,13 @@ class Trainer:
 
 			# progress = bar_len * (step_count + 1) // len(self.val_loader)
 			# print("█" * progress + "-" * (bar_len - progress), end=f" {progress * 100 / bar_len:2.0f}%\r", flush=True)
+
 			print(f"Metrics for image {step_count + 1}/{len(self.val_loader)} -" + "".join(f" {k}: {v:.3f}" for k, v in metrics.items()))
 			
 			for k, v in metrics.items():
 				total_metrics[k] = total_metrics.get(k, 0) + v
 
-			with open(fname, "a") as f:
+			with open(fpath, "a") as f:
 				if (step_count > 0):
 					f.write(",")
 				f.write(f"\n    \"{step_count + 1}\": ")
@@ -158,16 +160,22 @@ class Trainer:
 		avg_metrics = {k: v / (step_count + 1) for k, v in total_metrics.items()}		
 
 		# save on PSNR
-		self._save_state(step_count, avg_metrics["PSNR"], save=True)
+		# self._save_state(step_count, avg_metrics["PSNR"], save_last=False)
 
-		with open(fname, "a") as f:
+		with open(fpath, "a") as f:
 				f.write(f",\n    \"Average\": ")
 				json.dump(avg_metrics, f, ensure_ascii=False)
 				f.write("\n}\n") # close json obj
+		
+		os.makedirs(self.visual_dir, exist_ok=True)
+		os.rename(fpath, os.path.join(self.visual_dir, f"{self.checkpoint_prefix}_{epoch + 1 if epoch is not None else 'final'}_{f"{self.img}_" if hasattr(self, 'img') else ''}metrics.json"))
 
 		print("\nAverage Metrics -" + "".join(f" {k}: {v:.3f}" for k, v in avg_metrics.items()))
 		
 		torch.cuda.empty_cache()
+
+	def train(self):
+		raise NotImplementedError
 
 	def val(self, epoch=None):
 		def step_fn(batch, step):
@@ -191,7 +199,7 @@ class Trainer:
 		lpips_val = self.lpips(out, hrs).mean().item()
 
 		if save_img:
-			out_cpu = out.detach().cpu()
+			out_cpu = out.detach().cpu().clamp(0, 1)
 			lr_cpu = lrs.detach().cpu()
 			hr_cpu = hrs.detach().cpu()
 
@@ -258,10 +266,9 @@ class INRTrainer(Trainer):
 		)
 
 		self.visual_dir = "results/inr"
-		self.mid_title = "INR Output"
 
 	def train(self, start, epochs):
-		def step_fn(batch):
+		def step_fn(batch, epoch):
 			lrs, hrs_pix, coords, cells = batch
 			lrs = lrs.to(self.device)
 			hrs_pix = hrs_pix.to(self.device)
@@ -337,6 +344,7 @@ class DIPTrainer(Trainer):
 		val_interval=50,
 		save_interval=50,
 		checkpoint_prefix=None,
+		img=None,
 	):
 		super().__init__(
 			model=model,
@@ -357,18 +365,91 @@ class DIPTrainer(Trainer):
 		)
 
 		self.visual_dir = "results/dip"
-		self.mid_title = "DIP Output"
+		self.img = img
 
 	def train(self, start, epochs):
-		def step_fn(batch):
-			lrs, _ = batch
+		def step_fn(batch, epoch):
+			lrs, hrs = batch
+			lrs = lrs.to(self.device)
+			hrs = hrs.to(self.device)
 			hrs_out = self._generate_output()
-			lrs_out = F.interpolate(hrs_out, size=lrs.shape[-2:], mode="bicubic")
-			loss = self.criterion(lrs_out, lrs.to(self.device))
+			lrs_out = F.interpolate(hrs_out, size=lrs.shape[-2:], mode="bicubic", align_corners=False, antialias=True)
+			loss = self.criterion(lrs_out, lrs)
 
 			return loss, {}
 
 		self._train_loop(0, epochs, step_fn)
+	
+	def val(self, epoch):
+		def step_fn(batch, step):
+			lrs, hrs = batch
+			lrs = lrs.to(self.device)
+			hrs = hrs.to(self.device)
+
+			with torch.no_grad():
+				out = self._generate_output(lrs, hrs)
+				out = out.clamp(0, 1)
+
+			return self._display(lrs, hrs, out, suffix=f"{epoch + 1}_{self.img}", save_img=True)
+
+		self.model.eval()
+		self._val_loop(step_fn, epoch)
+		self.model.train()
 
 	def _generate_output(self, lrs=None, hrs=None):
 		return self.model()
+
+class SwinTrainer(Trainer):
+	def __init__(
+		self,
+		model,
+		criterion,
+		optimizer,
+		train_loader,
+		val_loader,
+		scheduler,
+		device,
+		psnr,
+		ssim,
+		lpips,
+		use_amp=False,
+		use_grad_scaler=False,
+		val_interval=1,
+		save_interval=1,
+		checkpoint_prefix=None,
+	):
+		super().__init__(
+			model=model,
+			criterion=criterion,
+			optimizer=optimizer,
+			train_loader=train_loader,
+			val_loader=val_loader,
+			scheduler=scheduler,
+			device=device,
+			psnr=psnr,
+			ssim=ssim,
+			lpips=lpips,
+			use_amp=use_amp,
+			use_grad_scaler=use_grad_scaler,
+			val_interval=val_interval,
+			save_interval=save_interval,
+			checkpoint_prefix=checkpoint_prefix,
+		)
+
+		self.visual_dir = "results/swin"
+
+	def train(self, start, epochs):
+		def step_fn(batch, epoch):
+			lrs, hrs = batch
+			lrs = lrs.to(self.device)
+			hrs = hrs.to(self.device)
+			hrs_out = self._generate_output(lrs, hrs)
+			loss = self.criterion(hrs_out, hrs)
+
+			return loss, {}
+
+		self._train_loop(start, epochs, step_fn)
+
+	def _generate_output(self, lrs=None, hrs=None):
+		_, _, H, W = hrs.shape
+		return self.model(lrs, H, W)
